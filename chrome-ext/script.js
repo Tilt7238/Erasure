@@ -365,16 +365,54 @@
     return words;
   })();
 
+  // a day without a year: the latest such day not after `notAfter`
+  function dayNotAfter(month, day, notAfter) {
+    var year = new Date(notAfter).getFullYear();
+    var date = new Date(year, month, day);
+    if (date.getTime() > notAfter) {
+      date = new Date(year - 1, month, day);
+    }
+    return date;
+  }
+
+  // valid calendar day as local midnight in ms, or null ("Feb 30")
+  function makeDay(year, month, day) {
+    var date = new Date(year, month, day);
+    return date.getMonth() === month && date.getDate() === day ? date.getTime() : null;
+  }
+
   /* Parse a day heading to local midnight in ms, or null. Strict: every
      token must be a day, month, year or weekday, so headings that are not
-     dates (or comment text) never parse. */
-  function parseDateHeading(text) {
-    var t = normalizeWord(text || "");
+     dates (or comment text) never parse. A heading without a year gets the
+     latest matching day not after `notAfter` — the list runs newest
+     first, so that is the previous heading's day (default: today). */
+  function parseDateHeading(text, notAfter) {
+    var raw = (text || "").trim();
+    var t = normalizeWord(raw);
     if (!t || t.length > 40) {
       return null;
     }
     var now = new Date();
     var today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    if (notAfter === undefined || notAfter === null || notAfter > today.getTime()) {
+      notAfter = today.getTime();
+    }
+    // numeric forms: 29.03.2015 / 29.03. / 2015-03-29 / 3/29/2015 (US)
+    var n;
+    if ((n = /^(\d{1,2})\.\s?(\d{1,2})\.(?:\s?(\d{4}))?$/.exec(raw))) {
+      if (n[3]) {
+        return makeDay(+n[3], n[2] - 1, +n[1]);
+      }
+      return makeDay(2000, n[2] - 1, +n[1]) === null
+        ? null
+        : dayNotAfter(n[2] - 1, +n[1], notAfter).getTime();
+    }
+    if ((n = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(raw))) {
+      return makeDay(+n[1], n[2] - 1, +n[3]);
+    }
+    if ((n = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(raw))) {
+      return makeDay(+n[3], n[1] - 1, +n[2]);
+    }
     if (DATE_WORDS.today.has(t)) {
       return today.getTime();
     }
@@ -405,24 +443,22 @@
     if (day === null || month === null) {
       return null;
     }
-    var yearGiven = year !== null;
-    if (!yearGiven) {
-      year = today.getFullYear();
+    if (year !== null) {
+      return makeDay(year, month, day);
     }
-    var date = new Date(year, month, day);
-    if (date.getDate() !== day) {
-      return null; // e.g. "Feb 30"
+    if (makeDay(2000, month, day) === null) {
+      return null; // not a day in any year (2000 is a leap year)
     }
-    if (!yearGiven && date > today) {
-      // headings omit the current year only; a future day is last year's
-      date = new Date(year - 1, month, day);
-    }
-    return date.getTime();
+    return dayNotAfter(month, day, notAfter).getTime();
   }
 
-  /* Date of each item = the nearest date heading above it in document
-     order. Cached per element (a rendered item never changes its day). */
-  var itemDates = new WeakMap();
+  /* Date of each item = the date heading directly above it in document
+     order. A heading that can't be read makes the items below it undated
+     — never let them inherit an older heading's day. Recomputed on every
+     call; the maps only hold the latest result. */
+  var itemDates = new WeakMap(); // item -> local midnight in ms
+  var itemDateSources = new WeakMap(); // item -> the heading text it came from
+  var unparsedHeadings = []; // heading texts that were not a readable date
 
   function assignDates(items) {
     if (items.length === 0 || SELECTORS.item.remembered < 0) {
@@ -431,18 +467,48 @@
     var itemCss = SELECTORS.item.candidates[SELECTORS.item.remembered].css;
     var nodes = document.querySelectorAll(itemCss + ", " + DATE_HEADER_CSS);
     var current = null;
+    var source = "";
+    var notAfter = null; // newest first: no later heading is after this day
+    var unparsed = [];
     for (var j = 0; j < nodes.length; j++) {
       var node = nodes[j];
       if (node.matches(itemCss)) {
-        if (current !== null && !itemDates.has(node)) {
+        if (current !== null) {
           itemDates.set(node, current);
+          itemDateSources.set(node, source);
+        } else {
+          itemDates.delete(node);
+          itemDateSources.set(node, source);
+          if (source && unparsed.indexOf(source) < 0) {
+            unparsed.push(source); // only headings that actually head items
+          }
         }
       } else if (!node.closest(itemCss)) {
         // headings inside an item (video titles etc.) are never day headings
-        var d = parseDateHeading(node.textContent);
-        if (d !== null) {
-          current = d;
+        var text = (node.textContent || "").replace(/\s+/g, " ").trim();
+        if (/^\d{4}$/.test(text)) {
+          // a year section: later year-less days belong to it
+          notAfter = new Date(+text, 11, 31).getTime();
+          current = null;
+          source = text;
+          continue;
         }
+        var d = parseDateHeading(text, notAfter);
+        current = d;
+        source = text;
+        if (d !== null) {
+          notAfter = d;
+        }
+      }
+    }
+    if (unparsed.join("|") !== unparsedHeadings.join("|")) {
+      unparsedHeadings = unparsed;
+      if (unparsed.length) {
+        console.log(
+          "erasure: %s heading(s) are not a readable date; items below them count as undated: %o",
+          unparsed.length,
+          unparsed
+        );
       }
     }
   }
@@ -593,6 +659,7 @@
     return {
       id: id,
       date: date === undefined ? null : date,
+      dateSource: itemDateSources.get(item) || "",
       time: time,
       text: m ? label.slice(m[0].length) : text.join(" "),
       title: title,
@@ -609,7 +676,12 @@
     if (hasExtensionMessaging) {
       try {
         chrome.runtime.sendMessage(
-          { type: "erasure:items", items: list, complete: complete },
+          {
+            type: "erasure:items",
+            items: list,
+            complete: complete,
+            unparsedHeadings: unparsedHeadings.slice(0, 20),
+          },
           function () {
             void chrome.runtime.lastError;
           }

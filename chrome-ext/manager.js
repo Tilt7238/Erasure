@@ -116,6 +116,7 @@ function renderList() {
     cb.type = "checkbox";
     cell(tr, "check").appendChild(cb);
     const dateTd = cell(tr, "date", formatDate(it.date));
+    dateTd.title = it.dateSource ? "From the heading “" + it.dateSource + "”" : "No date heading found";
     if (it.time) {
       dateTd.appendChild(document.createElement("br"));
       dateTd.appendChild(document.createTextNode(it.time));
@@ -546,9 +547,16 @@ function onItems(msg) {
   lastClickedId = null;
   stale = false;
   renderList();
+  const unparsed = msg.unparsedHeadings || [];
   setStatus(
     "Loaded " + items.length + " " + TYPES[listType].label +
-      (msg.complete ? "." : " — stopped early, the list is incomplete.")
+      (msg.complete ? "." : " — stopped early, the list is incomplete.") +
+      (unparsed.length
+        ? " Could not read " + unparsed.length + " date heading(s), e.g. “" +
+          unparsed.slice(0, 3).join("”, “") +
+          "” — items below them show “unknown date” and are never picked by “Select up to”."
+        : ""),
+    unparsed.length > 0
   );
   refresh();
 }

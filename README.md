@@ -28,3 +28,7 @@ Update 2.4.0:
 New manager page ("Open manager" in the popup): loads the complete list of comments, live chats or community posts into a table, where single items (shift-click for ranges), all items, or all items up to a date can be selected and deleted — oldest first if wanted. A text filter narrows the list.
 The manager drives a My Activity tab in your browser window; keep that tab in front while loading or deleting (hidden tabs don't render, so the run pauses until the tab is visible again).
 This needs access to myactivity.google.com (new host permission).
+
+Update 2.4.1:
+
+Fix wrong item dates: items below a day heading that can't be read are now "unknown date" instead of inheriting the previous heading's day. Year-less headings get the right year from the newest-first order, numeric dates (29.03.2015) are understood, and the manager names the headings it couldn't read.
