@@ -21,12 +21,41 @@ const ACTIVITY_URL = /^https:\/\/myactivity\.google\.com\//;
 // how long the My Activity page may take to load (sign-in prompts included)
 const LOAD_TIMEOUT = 60000;
 
+// marks an item whose video is gone (deleted, private, unavailable)
+const UNAVAILABLE_RE =
+  /\b(deleted|private|unavailable|removed) video\b|\bvideo (is )?(unavailable|private|removed)|nicht (mehr )?verfügbar|gelöschtes video|privates video|video wurde entfernt/i;
+
+// group key of an item's video / post link ("" without a link)
+function videoKey(url) {
+  if (!url) {
+    return "";
+  }
+  try {
+    const u = new URL(url);
+    if (u.searchParams.get("v")) {
+      return "v:" + u.searchParams.get("v");
+    }
+    if (u.hostname === "youtu.be") {
+      return "v:" + u.pathname.slice(1);
+    }
+    const m = /\/(shorts|live|post)\/([^/?#]+)/.exec(u.pathname);
+    if (m) {
+      return (m[1] === "post" ? "post:" : "v:") + m[2];
+    }
+    return u.origin + u.pathname;
+  } catch (e) {
+    return url;
+  }
+}
+
 let currentType = "comments"; // selected type tab
 let listType = null; // type the loaded list belongs to
 let items = []; // [{id, date, dateSource, time, text, title, url, full, status}] in page order
 let rowsById = new Map(); // id -> {item, tr, cb, textTd, linkEl, stateTd}
 let selected = new Set(); // selected item ids
 let lastClickedId = null; // anchor for shift-click ranges
+let groups = new Map(); // video key -> {key, title, url, unavailable, items, tr, cb, twisty, meta}
+let expanded = new Set(); // expanded video groups (collapsed by default)
 
 /* The My Activity tab the content script runs in. It lives in a normal
    browser window, active, because hidden tabs don't render and My
@@ -132,6 +161,10 @@ function refresh() {
   if (stale) parts.push("list outdated — load it again before deleting");
   summary.textContent = parts.join(" · ");
 
+  if (viewMode.value === "video") {
+    updateGroupHeaders();
+  }
+
   const selectable = shown.filter((r) => r.item.status !== "deleted");
   const shownSelected = selectable.filter((r) => selected.has(r.item.id)).length;
   toggleShown.checked = selectable.length > 0 && shownSelected === selectable.length;
@@ -177,14 +210,117 @@ function renderList() {
       linkEl.rel = "noopener";
       videoTd.appendChild(linkEl);
     }
+    if (it.unavailable) {
+      const badge = document.createElement("span");
+      badge.className = "badge";
+      badge.textContent = "unavailable";
+      videoTd.appendChild(badge);
+    }
     const stateTd = cell(tr, "state");
-    rowsById.set(it.id, { item: it, tr, cb, textTd, linkEl, stateTd });
+    rowsById.set(it.id, { item: it, tr, cb, textTd, linkEl, stateTd, match: true });
   });
+  buildGroups();
   emptyNote.hidden = items.length > 0;
   emptyNote.textContent = "No items loaded.";
   renderYearChips();
   applyView(true);
 }
+
+// one header row per video; its items follow it in "By video" view
+function buildGroups() {
+  groups = new Map();
+  items.forEach(function (it) {
+    const key = it.videoKey || "none";
+    let g = groups.get(key);
+    if (!g) {
+      g = { key: key, title: "", url: it.url, unavailable: false, items: [] };
+      groups.set(key, g);
+    }
+    g.items.push(it);
+    g.title = g.title || it.title;
+    g.unavailable = g.unavailable || it.unavailable;
+  });
+  groups.forEach(function (g) {
+    const tr = document.createElement("tr");
+    tr.className = "vgroup";
+    tr.dataset.group = g.key;
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.title = "Select / deselect this video's items (as filtered)";
+    cell(tr, "check").appendChild(cb);
+    const td = cell(tr, "");
+    td.colSpan = 4;
+    const twisty = document.createElement("button");
+    twisty.className = "twisty";
+    td.appendChild(twisty);
+    const title = document.createElement("span");
+    title.className = "title";
+    if (g.key === "none") {
+      title.textContent = "No video link — probably removed or unavailable";
+    } else if (g.url) {
+      const a = document.createElement("a");
+      a.href = g.url;
+      a.target = "_blank";
+      a.rel = "noopener";
+      a.textContent = g.title || g.url;
+      title.appendChild(a);
+    }
+    if (g.unavailable) {
+      const badge = document.createElement("span");
+      badge.className = "badge";
+      badge.textContent = "unavailable";
+      title.appendChild(badge);
+    }
+    td.appendChild(title);
+    const meta = document.createElement("span");
+    meta.className = "meta";
+    td.appendChild(meta);
+    Object.assign(g, { tr: tr, cb: cb, twisty: twisty, meta: meta });
+  });
+}
+
+function groupDates(g) {
+  const dated = g.items.filter((it) => it.date !== null).map((it) => it.date);
+  return dated.length ? { min: Math.min.apply(null, dated), max: Math.max.apply(null, dated) } : null;
+}
+
+function updateGroupHeaders() {
+  const label = listType ? TYPES[listType].label : "items";
+  groups.forEach(function (g) {
+    const rowsOf = g.items.map((it) => rowsById.get(it.id));
+    const matching = rowsOf.filter((r) => r.match);
+    const selectable = matching.filter((r) => r.item.status !== "deleted");
+    const sel = selectable.filter((r) => selected.has(r.item.id)).length;
+    const deleted = rowsOf.filter((r) => r.item.status === "deleted").length;
+    const dates = groupDates(g);
+    const parts = [g.items.length + " " + label];
+    if (matching.length < g.items.length) parts.push(matching.length + " match");
+    if (sel) parts.push(sel + " selected");
+    if (deleted) parts.push(deleted + " deleted");
+    if (dates) {
+      parts.push(
+        dates.min === dates.max ? formatDate(dates.min) : formatDate(dates.min) + " – " + formatDate(dates.max)
+      );
+    }
+    g.meta.textContent = parts.join(" · ");
+    g.cb.checked = selectable.length > 0 && sel === selectable.length;
+    g.cb.indeterminate = sel > 0 && sel < selectable.length;
+    g.cb.disabled = selectable.length === 0;
+    g.twisty.textContent = isExpanded(g) ? "▾" : "▸";
+  });
+}
+
+// a text search opens every group, so matches are never hidden
+function isExpanded(g) {
+  return expanded.has(g.key) || searchText.value.trim() !== "";
+}
+
+const GROUP_SORTS = {
+  count: (a, b) => b.items.length - a.items.length,
+  newest: (a, b) => ((groupDates(b) || { max: -Infinity }).max - (groupDates(a) || { max: -Infinity }).max),
+  oldest: (a, b) => ((groupDates(a) || { min: Infinity }).min - (groupDates(b) || { min: Infinity }).min),
+  title: (a, b) => (a.title || "\uffff").localeCompare(b.title || "\uffff"),
+};
 
 const STATE_LABELS = { queued: "queued", deleted: "deleted", skipped: "skipped" };
 
@@ -261,6 +397,7 @@ function matchesView(it, q, from, to, show) {
     case "undated": return it.date === null;
     case "skipped": return it.status === "skipped";
     case "deleted": return it.status === "deleted";
+    case "unavailable": return it.unavailable;
     default: return true;
   }
 }
@@ -270,18 +407,31 @@ function applyView(force) {
   const from = parseIsoDay(dateFrom.value);
   const to = parseIsoDay(dateTo.value);
   const show = showFilter.value;
-  const sort = sortOrder.value;
-  if (force || sort !== lastSort) {
+  const byVideo = viewMode.value === "video";
+  const order = [sortOrder.value, viewMode.value, groupSort.value].join("|");
+  if (force || order !== lastSort) {
     // page order is newest first
-    const ordered = sort === "oldest" ? items.slice().reverse() : items;
+    const sorted = (list) => (sortOrder.value === "oldest" ? list.slice().reverse() : list);
     const frag = document.createDocumentFragment();
-    ordered.forEach((it) => frag.appendChild(rowsById.get(it.id).tr));
+    if (byVideo) {
+      Array.from(groups.values())
+        .sort(GROUP_SORTS[groupSort.value])
+        .forEach(function (g) {
+          frag.appendChild(g.tr);
+          sorted(g.items).forEach((it) => frag.appendChild(rowsById.get(it.id).tr));
+        });
+    } else {
+      sorted(items).forEach((it) => frag.appendChild(rowsById.get(it.id).tr));
+      groups.forEach((g) => frag.appendChild(g.tr));
+    }
     rows.appendChild(frag);
-    lastSort = sort;
+    lastSort = order;
   }
+  videoControls.hidden = !byVideo;
   const rehighlight = force || q !== lastQuery;
   rowsById.forEach(function (r) {
-    r.tr.hidden = !matchesView(r.item, q, from, to, show);
+    r.match = matchesView(r.item, q, from, to, show);
+    r.tr.classList.toggle("member", byVideo);
     if (rehighlight) {
       highlight(r.textTd, r.item.text || "(no text)", q);
       if (r.linkEl) {
@@ -290,6 +440,15 @@ function applyView(force) {
     }
   });
   lastQuery = q;
+  groups.forEach(function (g) {
+    const anyMatch = g.items.some((it) => rowsById.get(it.id).match);
+    g.tr.hidden = !byVideo || !anyMatch;
+    const open = isExpanded(g);
+    g.items.forEach(function (it) {
+      const r = rowsById.get(it.id);
+      r.tr.hidden = !r.match || (byVideo && !open);
+    });
+  });
   updateYearChips();
   if (items.length && shownRows().length === 0) {
     emptyNote.hidden = false;
@@ -300,15 +459,23 @@ function applyView(force) {
   refresh();
 }
 
-// rows currently shown, in display order
+/* Item rows matching the search and filters, in display order — what
+   "Select shown", export and the counts work on. In "By video" view this
+   includes items of collapsed videos. */
 function shownRows() {
   const out = [];
   for (const tr of rows.children) {
-    if (!tr.hidden) {
-      out.push(rowsById.get(tr.dataset.id));
+    const r = tr.dataset.id && rowsById.get(tr.dataset.id);
+    if (r && r.match) {
+      out.push(r);
     }
   }
   return out;
+}
+
+// item rows actually on screen (for shift-click ranges)
+function visibleRows() {
+  return shownRows().filter((r) => !r.tr.hidden);
 }
 
 let searchTimer = null;
@@ -320,6 +487,22 @@ dateFrom.onchange = dateTo.onchange = () => applyView();
 showFilter.onchange = () => applyView();
 sortOrder.onchange = function () {
   saveSetting("sort", sortOrder.value);
+  applyView();
+};
+viewMode.onchange = function () {
+  saveSetting("view", viewMode.value);
+  applyView();
+};
+groupSort.onchange = function () {
+  saveSetting("groupSort", groupSort.value);
+  applyView();
+};
+expandAll.onclick = function () {
+  groups.forEach((g) => expanded.add(g.key));
+  applyView();
+};
+collapseAll.onclick = function () {
+  expanded.clear();
   applyView();
 };
 clearDates.onclick = function () {
@@ -406,13 +589,33 @@ document.addEventListener("keydown", function (e) {
 
 rows.addEventListener("click", function (e) {
   const cb = e.target;
+  const groupTr = cb.closest && cb.closest("tr.vgroup");
+  if (groupTr) {
+    const g = groups.get(groupTr.dataset.group);
+    if (cb.type === "checkbox") {
+      g.items.forEach(function (it) {
+        if (rowsById.get(it.id).match) {
+          setSelected(it.id, cb.checked);
+        }
+      });
+      applyView();
+    } else if (cb.classList.contains("twisty")) {
+      if (expanded.has(g.key)) {
+        expanded.delete(g.key);
+      } else {
+        expanded.add(g.key);
+      }
+      applyView();
+    }
+    return;
+  }
   if (cb.type !== "checkbox") {
     return;
   }
   const id = cb.closest("tr").dataset.id;
   if (e.shiftKey && lastClickedId !== null) {
-    // range over the rows currently shown, between anchor and this row
-    const shown = shownRows();
+    // range over the rows on screen, between anchor and this row
+    const shown = visibleRows();
     const a = shown.findIndex((r) => r.item.id === lastClickedId);
     const b = shown.findIndex((r) => r.item.id === id);
     if (a >= 0 && b >= 0) {
@@ -471,6 +674,7 @@ function exportRecords() {
       text: it.text,
       video: it.title,
       url: it.url,
+      unavailable: it.unavailable ? "yes" : "",
       status: it.status || "",
     };
   });
@@ -482,7 +686,7 @@ function exportName(ext) {
 
 exportCsv.onclick = function () {
   const recs = exportRecords();
-  const cols = ["date", "time", "text", "video", "url", "status"];
+  const cols = ["date", "time", "text", "video", "url", "unavailable", "status"];
   const quote = (v) => '"' + String(v).replace(/"/g, '""') + '"';
   const lines = [cols.join(",")].concat(recs.map((r) => cols.map((c) => quote(r[c])).join(",")));
   // BOM so Excel reads UTF-8
@@ -503,6 +707,8 @@ oldestFirst.onchange = () => saveSetting("oldestFirst", oldestFirst.checked);
 quickOldest.checked = loadSetting("quickOldest", "false") === "true";
 quickOldest.onchange = () => saveSetting("quickOldest", quickOldest.checked);
 sortOrder.value = loadSetting("sort", "newest") === "oldest" ? "oldest" : "newest";
+viewMode.value = loadSetting("view", "list") === "video" ? "video" : "list";
+groupSort.value = GROUP_SORTS[loadSetting("groupSort", "count")] ? loadSetting("groupSort", "count") : "count";
 currentType = TYPES[loadSetting("type", "comments")] ? loadSetting("type", "comments") : "comments";
 quickDate.max = dateFrom.max = dateTo.max = isoDay(Date.now());
 quickClearDate.onclick = () => (quickDate.value = "");
@@ -736,7 +942,8 @@ function confirmText(list, what) {
         (dated.length < list.length ? " (+ " + (list.length - dated.length) + " with unknown date)" : "")
     );
   }
-  const hidden = list.filter((it) => rowsById.get(it.id).tr.hidden).length;
+  // filtered out, not merely inside a collapsed video group
+  const hidden = list.filter((it) => !rowsById.get(it.id).match).length;
   if (hidden) {
     lines.push("⚠ " + hidden + " of them are hidden by the current search or filters.");
   }
@@ -857,7 +1064,14 @@ function onProgress(p) {
 }
 
 function onItems(msg) {
-  items = msg.items.map((it) => Object.assign({}, it, { status: undefined }));
+  items = msg.items.map((it) =>
+    Object.assign({}, it, {
+      status: undefined,
+      videoKey: videoKey(it.url),
+      unavailable: !it.url || UNAVAILABLE_RE.test(it.title) || UNAVAILABLE_RE.test(it.full),
+    })
+  );
+  expanded.clear();
   selected.clear();
   stale = false;
   renderList();
