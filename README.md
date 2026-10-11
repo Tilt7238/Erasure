@@ -50,3 +50,7 @@ Items on removed, private or otherwise unavailable videos (no video link, or tit
 Update 2.6.1:
 
 Matched to the live German My Activity layout: comments on private or unavailable videos ("Privates Video kommentiert", "…zu einem privaten Video: …", "Nutzer hat ein nicht verfügbares Video kommentiert") are marked unavailable; the action line is shown separately from the comment text; the thumbnail's video length is no longer taken for the time or the video title; German delete buttons are matched directly.
+
+Update 2.7.0:
+
+New logo: comment bubbles flying into a trash can. Sources are in chrome-ext/images/logo/ (logo.svg, and logo-small.svg, a simplified version for the 16 and 32 px icons).
