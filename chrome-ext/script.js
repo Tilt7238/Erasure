@@ -1,4 +1,11 @@
 (async function () {
+  /* Run options, set by the popup right before injection (see popup.js).
+     Pasted into the console without them, the defaults apply: newest
+     first, no date limit. Consumed here so a stale set never leaks into a
+     later run. */
+  var OPTIONS = window.__erasureOptions || {};
+  delete window.__erasureOptions;
+
   /* Re-injection guard: clicking the popup's delete button again (or
      re-pasting the script) while a run is active must not start a second,
      interleaved loop. The whole body is inside this IIFE so a duplicate
@@ -83,6 +90,20 @@
       remembered: -1,
     },
   };
+
+  /* Day headings of the My Activity list ("Today", "Yesterday", "Jul 3",
+     "3. Juli 2024", …). Every item belongs to the nearest date heading
+     above it. Unverified against the live page — if no item gets a date,
+     a date-limited run aborts before deleting anything. */
+  var DATE_HEADER_CSS = 'h2, h3, [role="heading"]';
+
+  // delete newest first (page order) or oldest first (bottom up — needs the
+  // whole list loaded before the first click)
+  var OLDEST_FIRST = !!OPTIONS.oldestFirst;
+
+  // only delete items dated on or before this day (local midnight, ms);
+  // null = no limit. Items without a readable date are never deleted then.
+  var CUTOFF = parseIsoDay(OPTIONS.cutoffDate);
 
   // deletions kept in flight at once. Google's per-delete latency (~3 s
   // observed live) dominates a sequential run, so overlapping independent
@@ -282,27 +303,208 @@
     return false;
   }
 
-  // first comment item we haven't given up on or already dispatched
-  function nextItem() {
-    var items = allItems();
-    for (var j = 0; j < items.length; j++) {
-      if (!skippedItems.has(items[j]) && !inFlightItems.has(items[j])) {
-        return items[j];
-      }
+  // ---- item dates ----
+
+  // "YYYY-MM-DD" (the popup's <input type="date">) -> local midnight in ms
+  function parseIsoDay(s) {
+    var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s || "");
+    if (!m) {
+      return null;
     }
-    return null;
+    return new Date(+m[1], +m[2] - 1, +m[3]).getTime();
   }
 
-  // how many comment items remain to be dispatched
-  function deletableCount() {
-    var items = allItems();
-    var n = 0;
-    for (var j = 0; j < items.length; j++) {
-      if (!skippedItems.has(items[j]) && !inFlightItems.has(items[j])) {
-        n++;
+  function normalizeWord(s) {
+    return s.toLowerCase().replace(/[.,]/g, " ").replace(/\s+/g, " ").trim();
+  }
+
+  /* Month/weekday names and "today"/"yesterday" in the page's language,
+     plus English and German, built from Intl so no locale table is
+     hard-coded. */
+  var DATE_WORDS = (function () {
+    var words = {
+      months: new Map(),
+      weekdays: new Map(),
+      today: new Set(),
+      yesterday: new Set(),
+    };
+    var langs = [document.documentElement.lang, "en", "de"].filter(Boolean);
+    langs.forEach(function (lang) {
+      try {
+        ["long", "short"].forEach(function (style) {
+          var monthFmt = new Intl.DateTimeFormat(lang, { month: style });
+          var dayFmt = new Intl.DateTimeFormat(lang, { weekday: style });
+          for (var m = 0; m < 12; m++) {
+            words.months.set(normalizeWord(monthFmt.format(new Date(2000, m, 15))), m);
+          }
+          for (var d = 0; d < 7; d++) {
+            // 2000-01-02 was a Sunday, so d matches Date.getDay()
+            words.weekdays.set(normalizeWord(dayFmt.format(new Date(2000, 0, 2 + d))), d);
+          }
+        });
+        var rel = new Intl.RelativeTimeFormat(lang, { numeric: "auto" });
+        words.today.add(normalizeWord(rel.format(0, "day")));
+        words.yesterday.add(normalizeWord(rel.format(-1, "day")));
+      } catch (e) {
+        // unsupported locale tag — the other languages still apply
+      }
+    });
+    return words;
+  })();
+
+  /* Parse a day heading to local midnight in ms, or null. Strict: every
+     token must be a day, month, year or weekday, so headings that are not
+     dates (or comment text) never parse. */
+  function parseDateHeading(text) {
+    var t = normalizeWord(text || "");
+    if (!t || t.length > 40) {
+      return null;
+    }
+    var now = new Date();
+    var today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    if (DATE_WORDS.today.has(t)) {
+      return today.getTime();
+    }
+    if (DATE_WORDS.yesterday.has(t)) {
+      return new Date(today.getFullYear(), today.getMonth(), today.getDate() - 1).getTime();
+    }
+    if (DATE_WORDS.weekdays.has(t)) {
+      // a bare weekday means the most recent such day before today
+      var back = (today.getDay() - DATE_WORDS.weekdays.get(t) + 7) % 7 || 7;
+      return new Date(today.getFullYear(), today.getMonth(), today.getDate() - back).getTime();
+    }
+    var day = null;
+    var month = null;
+    var year = null;
+    var tokens = t.split(" ");
+    for (var k = 0; k < tokens.length; k++) {
+      var tok = tokens[k];
+      if (/^\d{4}$/.test(tok) && year === null) {
+        year = +tok;
+      } else if (/^\d{1,2}$/.test(tok) && day === null) {
+        day = +tok;
+      } else if (DATE_WORDS.months.has(tok) && month === null) {
+        month = DATE_WORDS.months.get(tok);
+      } else if (!DATE_WORDS.weekdays.has(tok)) {
+        return null;
       }
     }
-    return n;
+    if (day === null || month === null) {
+      return null;
+    }
+    var yearGiven = year !== null;
+    if (!yearGiven) {
+      year = today.getFullYear();
+    }
+    var date = new Date(year, month, day);
+    if (date.getDate() !== day) {
+      return null; // e.g. "Feb 30"
+    }
+    if (!yearGiven && date > today) {
+      // headings omit the current year only; a future day is last year's
+      date = new Date(year - 1, month, day);
+    }
+    return date.getTime();
+  }
+
+  /* Date of each item = the nearest date heading above it in document
+     order. Cached per element (a rendered item never changes its day). */
+  var itemDates = new WeakMap();
+
+  function assignDates(items) {
+    if (items.length === 0 || SELECTORS.item.remembered < 0) {
+      return;
+    }
+    var itemCss = SELECTORS.item.candidates[SELECTORS.item.remembered].css;
+    var nodes = document.querySelectorAll(itemCss + ", " + DATE_HEADER_CSS);
+    var current = null;
+    for (var j = 0; j < nodes.length; j++) {
+      var node = nodes[j];
+      if (node.matches(itemCss)) {
+        if (current !== null && !itemDates.has(node)) {
+          itemDates.set(node, current);
+        }
+      } else if (!node.closest(itemCss)) {
+        // headings inside an item (video titles etc.) are never day headings
+        var d = parseDateHeading(node.textContent);
+        if (d !== null) {
+          current = d;
+        }
+      }
+    }
+  }
+
+  // with a date limit: at least one item has a readable date (or there are
+  // no items at all, so there is nothing to misjudge)
+  function datesReadable() {
+    var items = allItems();
+    assignDates(items);
+    return (
+      items.length === 0 ||
+      items.some(function (it) {
+        return itemDates.has(it);
+      })
+    );
+  }
+
+  function withinCutoff(item) {
+    if (CUTOFF === null) {
+      return true;
+    }
+    var d = itemDates.get(item);
+    return d !== undefined && d <= CUTOFF;
+  }
+
+  /* Items still to dispatch, in deletion order: not skipped, not in
+     flight, inside the date limit; oldest (bottom) first if requested. */
+  function pendingItems() {
+    var items = allItems();
+    if (CUTOFF !== null) {
+      assignDates(items);
+    }
+    var pending = items.filter(function (it) {
+      return !skippedItems.has(it) && !inFlightItems.has(it) && withinCutoff(it);
+    });
+    return OLDEST_FIRST ? pending.reverse() : pending;
+  }
+
+  // next item to delete
+  function nextItem() {
+    return pendingItems()[0] || null;
+  }
+
+  // how many items remain to be dispatched
+  function deletableCount() {
+    return pendingItems().length;
+  }
+
+  // items on the page that the date limit protects (newer or undated)
+  function keptCount() {
+    if (CUTOFF === null) {
+      return 0;
+    }
+    var items = allItems();
+    assignDates(items);
+    return items.filter(function (it) {
+      return !withinCutoff(it);
+    }).length;
+  }
+
+  /* Oldest first: the list is newest-first with infinite scroll, so load
+     it completely before the first deletion. Returns false if stopped. */
+  async function loadAllItems() {
+    var misses = 0;
+    while (misses < EMPTY_RECHECK_LIMIT) {
+      if (stopRequested) {
+        return false;
+      }
+      setState("loading", allItems().length + " items loaded");
+      autoScroll();
+      var appeared = await waitForNewItems(NEW_ITEMS_TIMEOUT);
+      misses = appeared ? 0 : misses + 1;
+    }
+    console.log("erasure: list fully loaded — %s items", allItems().length);
+    return true;
   }
 
   // visible enough to interact with (covers display:none and detached shells;
@@ -651,6 +853,9 @@
         var waitStarted = performance.now();
         var appeared = await waitForNewItems(NEW_ITEMS_TIMEOUT);
         if (appeared) {
+          // new items count as progress even if the date limit protects
+          // them all — the eligible ones may be further down
+          emptyChecks = 0;
           console.debug(
             "erasure: more items appeared after %s ms",
             Math.round(performance.now() - waitStarted)
@@ -688,8 +893,39 @@
     chrome.runtime.onMessage.addListener(window.__erasureOnMessage);
   }
 
+  // the done-message detail, mentioning items the date limit protected
+  function doneDetail(base) {
+    var kept = keptCount();
+    return kept > 0 ? base + ", " + kept + " newer items kept" : base;
+  }
+
   try {
-    if (selfCheck()) {
+    console.log(
+      "erasure: options — %s, %s",
+      OLDEST_FIRST ? "oldest first" : "newest first",
+      CUTOFF === null
+        ? "no date limit"
+        : "only items up to " + new Date(CUTOFF).toDateString()
+    );
+    var layoutOk = selfCheck();
+    var loaded = true;
+    if (layoutOk && OLDEST_FIRST) {
+      loaded = await loadAllItems();
+      layoutOk = selfCheck(); // the list may have been empty at startup
+    }
+    if (!layoutOk) {
+      setState("error", "page layout changed — selectors need updating (see console)");
+    } else if (!loaded) {
+      console.log("erasure: stopped by user while loading.");
+      setState("done", "stopped by user");
+    } else if (CUTOFF !== null && !datesReadable()) {
+      // never guess: without dates the limit can't be honored
+      console.log(
+        "erasure: could not read any item dates (no day heading matched '%s') — nothing deleted",
+        DATE_HEADER_CSS
+      );
+      setState("error", "could not read item dates — nothing deleted (see console)");
+    } else {
       runStartedAt = performance.now();
       report(); // announce the run to an already-open popup
       // one dialog watcher covers the whole run (attempts overlap now)
@@ -702,16 +938,14 @@
       }
       if (outcome === "stopped") {
         console.log("erasure: stopped by user.");
-        setState("done", "stopped by user");
+        setState("done", doneDetail("stopped by user"));
       } else {
         console.log(
           "erasure: no more items after %s retries, done.",
           EMPTY_RECHECK_LIMIT
         );
-        setState("done", "all items processed");
+        setState("done", doneDetail("all items processed"));
       }
-    } else {
-      setState("error", "page layout changed — selectors need updating (see console)");
     }
     logSummary();
   } catch (e) {

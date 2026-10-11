@@ -32,6 +32,8 @@ function renderProgress(p) {
   var detail = p.detail ? " — " + p.detail : "";
   if (p.state === "running") {
     setStatus("Running: " + counts + detail);
+  } else if (p.state === "loading") {
+    setStatus("Loading the whole list (oldest first)… " + p.detail);
   } else if (p.state === "scrolling") {
     setStatus("Loading more items… " + counts + detail);
   } else if (p.state === "done") {
@@ -78,6 +80,74 @@ stopButton.onclick = function () {
     });
   });
 };
+
+// ---- run options: date limit + order ----
+
+// remembered per popup in localStorage (no "storage" permission needed);
+// any storage failure just falls back to the defaults
+function loadOption(key, fallback) {
+  try {
+    var v = localStorage.getItem("erasure." + key);
+    return v === null ? fallback : v;
+  } catch (e) {
+    return fallback;
+  }
+}
+
+function saveOption(key, value) {
+  try {
+    localStorage.setItem("erasure." + key, value);
+  } catch (e) {
+    // not remembered — harmless
+  }
+}
+
+function todayIso() {
+  var d = new Date();
+  d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
+  return d.toISOString().slice(0, 10);
+}
+
+// delete-button captions follow the date limit
+var deleteButtons = [
+  [deleteCommentHistory, "Comments"],
+  [deleteLiveChats, "Live Chats"],
+  [deleteCommunityPosts, "Community Posts"],
+];
+
+function updateDeleteLabels() {
+  var limit = cutoffDate.value
+    ? " up to " + new Date(cutoffDate.value + "T00:00").toLocaleDateString()
+    : "";
+  deleteButtons.forEach(function (b) {
+    b[0].firstElementChild.textContent =
+      "Click to delete " + (limit ? "" : "all ") + b[1] + limit;
+  });
+}
+
+cutoffDate.max = todayIso();
+cutoffDate.value = loadOption("cutoffDate", "");
+oldestFirst.checked = loadOption("oldestFirst", "true") === "true";
+updateDeleteLabels();
+
+cutoffDate.onchange = function () {
+  saveOption("cutoffDate", cutoffDate.value);
+  updateDeleteLabels();
+};
+clearCutoff.onclick = function () {
+  cutoffDate.value = "";
+  cutoffDate.onchange();
+};
+oldestFirst.onchange = function () {
+  saveOption("oldestFirst", String(oldestFirst.checked));
+};
+
+function runOptions() {
+  return {
+    cutoffDate: cutoffDate.value || null, // "YYYY-MM-DD", inclusive
+    oldestFirst: oldestFirst.checked,
+  };
+}
 
 // ---- navigate / delete buttons ----
 
@@ -132,10 +202,22 @@ function executeScriptInTab(tabs, scripting) {
       return;
     }
     setStatus("Starting…");
+    var target = { tabId: tab.id, allFrames: true };
+    // hand the options to the script first: both injections run in the
+    // same isolated world, so the script reads them from window
     scripting
       .executeScript({
-        target: { tabId: tab.id, allFrames: true },
-        files: [deletionScript],
+        target: target,
+        func: function (opts) {
+          window.__erasureOptions = opts;
+        },
+        args: [runOptions()],
+      })
+      .then(function () {
+        return scripting.executeScript({
+          target: target,
+          files: [deletionScript],
+        });
       })
       .catch(function (e) {
         setStatus("Could not start on this page: " + e.message, true);
