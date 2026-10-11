@@ -105,6 +105,15 @@
   // null = no limit. Items without a readable date are never deleted then.
   var CUTOFF = parseIsoDay(OPTIONS.cutoffDate);
 
+  /* What this run does (the manager page drives the last two):
+     "auto"  delete everything matching the options (popup / console)
+     "list"  load the whole list and send every item to the manager
+     "ids"   delete only the items the manager selected, by the ids
+             ("data-erasure-id") a "list" run gave them in this document */
+  var MODE =
+    OPTIONS.mode === "list" ? "list" : Array.isArray(OPTIONS.ids) ? "ids" : "auto";
+  var SELECTED_IDS = MODE === "ids" ? new Set(OPTIONS.ids.map(String)) : null;
+
   // deletions kept in flight at once. Google's per-delete latency (~3 s
   // observed live) dominates a sequential run, so overlapping independent
   // deletes multiplies throughput when Google processes them in parallel
@@ -130,6 +139,9 @@
   // consecutive empty re-checks (scroll + observe, NEW_ITEMS_TIMEOUT each)
   // that find nothing before declaring the run done
   var EMPTY_RECHECK_LIMIT = 3;
+
+  // an id run deletes a known set — nothing more can scroll into view
+  var END_RECHECKS = MODE === "ids" ? 0 : EMPTY_RECHECK_LIMIT;
 
   // scroll for the next page (fire-and-forget) whenever fewer than this many
   // deletable items remain, so loading overlaps with the tail of deletions
@@ -159,6 +171,7 @@
   var stopRequested = false; // set by the popup's Stop button
   var currentState = "running"; // running | scrolling | done | error
   var currentDetail = "";
+  var wakeUp = null; // resolves waitUntilVisible() early on stop
 
   // chrome.runtime is only available when injected as an extension content
   // script — feature-detect so pasting into the DevTools console still works
@@ -448,6 +461,9 @@
   }
 
   function withinCutoff(item) {
+    if (SELECTED_IDS && !SELECTED_IDS.has(item.getAttribute("data-erasure-id"))) {
+      return false;
+    }
     if (CUTOFF === null) {
       return true;
     }
@@ -490,21 +506,137 @@
     }).length;
   }
 
+  /* Hidden tabs don't render, so My Activity's infinite scroll (and
+     possibly its removal animations) stall there. Wait until the tab is
+     visible again instead of mistaking the stall for the end of the list. */
+  async function waitUntilVisible() {
+    if (!document.hidden || stopRequested) {
+      return;
+    }
+    var state = currentState;
+    var detail = currentDetail;
+    console.log("erasure: tab hidden — paused until it is visible again");
+    setState(state, "paused — bring the My Activity tab to the front");
+    await new Promise(function (resolve) {
+      function done() {
+        document.removeEventListener("visibilitychange", check);
+        wakeUp = null;
+        resolve();
+      }
+      function check() {
+        if (!document.hidden) {
+          done();
+        }
+      }
+      wakeUp = done;
+      document.addEventListener("visibilitychange", check);
+    });
+    setState(state, detail);
+  }
+
   /* Oldest first: the list is newest-first with infinite scroll, so load
      it completely before the first deletion. Returns false if stopped. */
   async function loadAllItems() {
     var misses = 0;
     while (misses < EMPTY_RECHECK_LIMIT) {
+      await waitUntilVisible();
       if (stopRequested) {
         return false;
       }
       setState("loading", allItems().length + " items loaded");
       autoScroll();
       var appeared = await waitForNewItems(NEW_ITEMS_TIMEOUT);
+      if (!appeared && document.hidden) {
+        continue; // stalled by hiding, not the end — don't count it
+      }
       misses = appeared ? 0 : misses + 1;
     }
     console.log("erasure: list fully loaded — %s items", allItems().length);
     return true;
+  }
+
+  /* What the manager shows for an item. Also tags the item with its id;
+     the counter lives on window so a second list run in the same document
+     never reuses an id. */
+  function describeItem(item) {
+    var id = item.getAttribute("data-erasure-id");
+    if (!id) {
+      window.__erasureNextId = (window.__erasureNextId || 0) + 1;
+      id = String(window.__erasureNextId);
+      item.setAttribute("data-erasure-id", id);
+    }
+    var link = Array.prototype.find.call(item.querySelectorAll("a[href]"), function (a) {
+      return /(^|\.)youtube\.com\/|youtu\.be\//.test(a.href);
+    });
+    var title = link ? link.textContent.trim() : "";
+    var lines = (item.innerText || "")
+      .split("\n")
+      .map(function (l) {
+        return l.trim();
+      })
+      .filter(Boolean);
+    var time = "";
+    var text = [];
+    lines.forEach(function (l) {
+      var t = /\b\d{1,2}:\d{2}(\s?[AaPp]\.?[Mm]\.?)?/.exec(l);
+      if (t && l.length < 40) {
+        time = time || t[0]; // the "10:23 AM • Details" line
+      } else if (l !== title && !/^youtube$/i.test(l)) {
+        text.push(l);
+      }
+    });
+    // English UI: the delete button's label carries exactly the comment
+    var del = pick(item, "deleteX");
+    var label = (del && del.getAttribute("aria-label")) || "";
+    var m = /^delete activity item\s+/i.exec(label);
+    var date = itemDates.get(item);
+    return {
+      id: id,
+      date: date === undefined ? null : date,
+      time: time,
+      text: m ? label.slice(m[0].length) : text.join(" "),
+      title: title,
+      url: link ? link.href : "",
+      full: lines.join("\n"),
+    };
+  }
+
+  function sendItems(complete) {
+    var items = allItems();
+    assignDates(items);
+    var list = items.map(describeItem);
+    console.log("erasure: sending %s items to the manager", list.length);
+    if (hasExtensionMessaging) {
+      try {
+        chrome.runtime.sendMessage(
+          { type: "erasure:items", items: list, complete: complete },
+          function () {
+            void chrome.runtime.lastError;
+          }
+        );
+      } catch (e) {
+        // extension reloaded — nobody to send to
+      }
+    }
+    return list.length;
+  }
+
+  // tell the manager what became of one of its items
+  function reportItem(item, result) {
+    var id = item.getAttribute("data-erasure-id");
+    if (!id || !hasExtensionMessaging) {
+      return;
+    }
+    try {
+      chrome.runtime.sendMessage(
+        { type: "erasure:item", id: id, result: result },
+        function () {
+          void chrome.runtime.lastError;
+        }
+      );
+    } catch (e) {
+      // extension reloaded — keep going
+    }
   }
 
   // visible enough to interact with (covers display:none and detached shells;
@@ -594,6 +726,7 @@
       unconfirmedItems.delete(item);
       deletedCount++;
       console.debug("erasure: removal confirmed late for an item");
+      reportItem(item, "deleted");
       report();
       return;
     }
@@ -611,6 +744,7 @@
       unconfirmedItems.delete(item);
       skippedItems.add(item);
       skippedCount++;
+      reportItem(item, "skipped");
       report();
     }
   }
@@ -661,6 +795,7 @@
         failMap.delete(it);
         deletedCount++;
         late++;
+        reportItem(it, "deleted");
       }
     });
     skippedItems.forEach(function (it) {
@@ -669,6 +804,7 @@
         skippedCount--;
         deletedCount++;
         late++;
+        reportItem(it, "deleted");
       }
     });
     if (late > 0) {
@@ -765,6 +901,7 @@
       failMap.delete(item);
       unconfirmedItems.delete(item);
       console.debug("erasure: deleted in %s ms", elapsed);
+      reportItem(item, "deleted");
       report();
       // recovery: shrink the inter-item wait back toward zero
       backoffMs = backoffMs / 2;
@@ -794,7 +931,7 @@
       .then(function () {
         inFlightItems.delete(item);
         inFlight.delete(p);
-        if (deletableCount() < LOW_WATER_MARK) {
+        if (MODE !== "ids" && deletableCount() < LOW_WATER_MARK) {
           // start loading the next page while the tail drains
           autoScroll();
         }
@@ -808,6 +945,7 @@
      re-checks with nothing left in flight. */
   async function run() {
     while (true) {
+      await waitUntilVisible();
       if (stopRequested) {
         if (inFlight.size > 0) {
           // let the already-clicked deletions settle so counts are honest
@@ -831,7 +969,7 @@
         commentsAvailable2();
       }
       if (inFlight.size === 0) {
-        if (emptyChecks >= EMPTY_RECHECK_LIMIT) {
+        if (emptyChecks >= END_RECHECKS) {
           return "complete";
         }
         emptyChecks++;
@@ -852,6 +990,9 @@
         autoScroll();
         var waitStarted = performance.now();
         var appeared = await waitForNewItems(NEW_ITEMS_TIMEOUT);
+        if (!appeared && document.hidden) {
+          emptyChecks--; // stalled by hiding, not the end — don't count it
+        }
         if (appeared) {
           // new items count as progress even if the date limit protects
           // them all — the eligible ones may be further down
@@ -884,6 +1025,9 @@
     window.__erasureOnMessage = function (msg, sender, sendResponse) {
       if (msg && msg.type === "erasure:stop") {
         stopRequested = true;
+        if (wakeUp) {
+          wakeUp();
+        }
         console.log("erasure: stop requested");
         sendResponse({ ok: true });
       } else if (msg && msg.type === "erasure:status") {
@@ -909,11 +1053,26 @@
     );
     var layoutOk = selfCheck();
     var loaded = true;
-    if (layoutOk && OLDEST_FIRST) {
+    // ids the manager selected that are no longer on this page
+    var missingIds = SELECTED_IDS
+      ? Array.from(SELECTED_IDS).filter(function (id) {
+          return !document.querySelector('[data-erasure-id="' + CSS.escape(id) + '"]');
+        }).length
+      : 0;
+    if (layoutOk && MODE === "list") {
+      loaded = await loadAllItems();
+      var count = sendItems(loaded);
+      setState("done", count + " items loaded" + (loaded ? "" : " (stopped early)"));
+    } else if (layoutOk && SELECTED_IDS && missingIds === SELECTED_IDS.size) {
+      console.log("erasure: none of the selected items is on this page");
+      setState("error", "the selected items are no longer on the page — reload the list");
+    } else if (layoutOk && OLDEST_FIRST && MODE !== "ids") {
       loaded = await loadAllItems();
       layoutOk = selfCheck(); // the list may have been empty at startup
     }
-    if (!layoutOk) {
+    if ((layoutOk && MODE === "list") || currentState === "error") {
+      // handled above
+    } else if (!layoutOk) {
       setState("error", "page layout changed — selectors need updating (see console)");
     } else if (!loaded) {
       console.log("erasure: stopped by user while loading.");
@@ -944,7 +1103,13 @@
           "erasure: no more items after %s retries, done.",
           EMPTY_RECHECK_LIMIT
         );
-        setState("done", doneDetail("all items processed"));
+        setState(
+          "done",
+          doneDetail(
+            "all items processed" +
+              (missingIds ? ", " + missingIds + " selected items not found on the page" : "")
+          )
+        );
       }
     }
     logSummary();
