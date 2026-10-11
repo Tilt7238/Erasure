@@ -28,3 +28,29 @@ Update 2.4.0:
 New manager page ("Open manager" in the popup): loads the complete list of comments, live chats or community posts into a table, where single items (shift-click for ranges), all items, or all items up to a date can be selected and deleted — oldest first if wanted. A text filter narrows the list.
 The manager drives a My Activity tab in your browser window; keep that tab in front while loading or deleting (hidden tabs don't render, so the run pauses until the tab is visible again).
 This needs access to myactivity.google.com (new host permission).
+
+Update 2.4.1:
+
+Fix wrong item dates: items below a day heading that can't be read are now "unknown date" instead of inheriting the previous heading's day. Year-less headings get the right year from the newest-first order, numeric dates (29.03.2015) are understood, and the manager names the headings it couldn't read.
+
+Update 2.5.0:
+
+The toolbar icon now opens the manager window directly (the small popup is gone); everything happens there:
+- search (Ctrl+F) with highlighted matches, date range filter, year chips with counts, show filter (not deleted / selected / unknown date / skipped / deleted) and newest/oldest sort
+- export the shown items as CSV or JSON as a backup before deleting
+- progress bar with time estimate; the delete confirmation names the date range and warns about selected items hidden by filters
+- quick delete: delete everything (or everything up to a date) without loading the list first — the former popup function
+- "Open in My Activity" opens the history page in the browser
+
+Update 2.6.0:
+
+"By video" view: items grouped per video (or post) with count and date range, collapsible, sortable by number of items, date or title; one checkbox selects a video's items.
+Items on removed, private or otherwise unavailable videos (no video link, or titles like "Deleted video") are marked "unavailable" and can be shown with the "Unavailable videos" filter — e.g. to delete them all at once.
+
+Update 2.6.1:
+
+Matched to the live German My Activity layout: comments on private or unavailable videos ("Privates Video kommentiert", "…zu einem privaten Video: …", "Nutzer hat ein nicht verfügbares Video kommentiert") are marked unavailable; the action line is shown separately from the comment text; the thumbnail's video length is no longer taken for the time or the video title; German delete buttons are matched directly.
+
+Update 2.7.0:
+
+New logo: comment bubbles flying into a trash can. Sources are in chrome-ext/images/logo/ (logo.svg, and logo-small.svg, a simplified version for the 16 and 32 px icons).

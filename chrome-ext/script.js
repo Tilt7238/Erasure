@@ -1,12 +1,12 @@
 (async function () {
-  /* Run options, set by the popup right before injection (see popup.js).
+  /* Run options, set by the manager right before injection (see manager.js).
      Pasted into the console without them, the defaults apply: newest
      first, no date limit. Consumed here so a stale set never leaks into a
      later run. */
   var OPTIONS = window.__erasureOptions || {};
   delete window.__erasureOptions;
 
-  /* Re-injection guard: clicking the popup's delete button again (or
+  /* Re-injection guard: starting a second run in the same tab (or
      re-pasting the script) while a run is active must not start a second,
      interleaved loop. The whole body is inside this IIFE so a duplicate
      injection skips everything. */
@@ -54,6 +54,7 @@
     deleteX: {
       candidates: [
         { css: 'button[aria-label*="delete" i]' }, // verified 2026-07
+        { css: 'button[aria-label*="löschen" i]' }, // German UI
         { css: ".VfPpkd-Bz112c-LgbsSe" },
       ],
       remembered: -1,
@@ -105,8 +106,8 @@
   // null = no limit. Items without a readable date are never deleted then.
   var CUTOFF = parseIsoDay(OPTIONS.cutoffDate);
 
-  /* What this run does (the manager page drives the last two):
-     "auto"  delete everything matching the options (popup / console)
+  /* What this run does (all three driven by the manager page):
+     "auto"  delete everything matching the options (quick delete / console)
      "list"  load the whole list and send every item to the manager
      "ids"   delete only the items the manager selected, by the ids
              ("data-erasure-id") a "list" run gave them in this document */
@@ -168,7 +169,7 @@
   var backoffMs = 0; // current inter-item wait; 0 while deletions succeed
 
   var runStartedAt = null; // performance.now() when the loop began
-  var stopRequested = false; // set by the popup's Stop button
+  var stopRequested = false; // set by the manager's Stop button
   var currentState = "running"; // running | scrolling | done | error
   var currentDetail = "";
   var wakeUp = null; // resolves waitUntilVisible() early on stop
@@ -318,7 +319,7 @@
 
   // ---- item dates ----
 
-  // "YYYY-MM-DD" (the popup's <input type="date">) -> local midnight in ms
+  // "YYYY-MM-DD" (an <input type="date">) -> local midnight in ms
   function parseIsoDay(s) {
     var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s || "");
     if (!m) {
@@ -365,16 +366,54 @@
     return words;
   })();
 
+  // a day without a year: the latest such day not after `notAfter`
+  function dayNotAfter(month, day, notAfter) {
+    var year = new Date(notAfter).getFullYear();
+    var date = new Date(year, month, day);
+    if (date.getTime() > notAfter) {
+      date = new Date(year - 1, month, day);
+    }
+    return date;
+  }
+
+  // valid calendar day as local midnight in ms, or null ("Feb 30")
+  function makeDay(year, month, day) {
+    var date = new Date(year, month, day);
+    return date.getMonth() === month && date.getDate() === day ? date.getTime() : null;
+  }
+
   /* Parse a day heading to local midnight in ms, or null. Strict: every
      token must be a day, month, year or weekday, so headings that are not
-     dates (or comment text) never parse. */
-  function parseDateHeading(text) {
-    var t = normalizeWord(text || "");
+     dates (or comment text) never parse. A heading without a year gets the
+     latest matching day not after `notAfter` — the list runs newest
+     first, so that is the previous heading's day (default: today). */
+  function parseDateHeading(text, notAfter) {
+    var raw = (text || "").trim();
+    var t = normalizeWord(raw);
     if (!t || t.length > 40) {
       return null;
     }
     var now = new Date();
     var today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    if (notAfter === undefined || notAfter === null || notAfter > today.getTime()) {
+      notAfter = today.getTime();
+    }
+    // numeric forms: 29.03.2015 / 29.03. / 2015-03-29 / 3/29/2015 (US)
+    var n;
+    if ((n = /^(\d{1,2})\.\s?(\d{1,2})\.(?:\s?(\d{4}))?$/.exec(raw))) {
+      if (n[3]) {
+        return makeDay(+n[3], n[2] - 1, +n[1]);
+      }
+      return makeDay(2000, n[2] - 1, +n[1]) === null
+        ? null
+        : dayNotAfter(n[2] - 1, +n[1], notAfter).getTime();
+    }
+    if ((n = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(raw))) {
+      return makeDay(+n[1], n[2] - 1, +n[3]);
+    }
+    if ((n = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(raw))) {
+      return makeDay(+n[3], n[1] - 1, +n[2]);
+    }
     if (DATE_WORDS.today.has(t)) {
       return today.getTime();
     }
@@ -405,24 +444,22 @@
     if (day === null || month === null) {
       return null;
     }
-    var yearGiven = year !== null;
-    if (!yearGiven) {
-      year = today.getFullYear();
+    if (year !== null) {
+      return makeDay(year, month, day);
     }
-    var date = new Date(year, month, day);
-    if (date.getDate() !== day) {
-      return null; // e.g. "Feb 30"
+    if (makeDay(2000, month, day) === null) {
+      return null; // not a day in any year (2000 is a leap year)
     }
-    if (!yearGiven && date > today) {
-      // headings omit the current year only; a future day is last year's
-      date = new Date(year - 1, month, day);
-    }
-    return date.getTime();
+    return dayNotAfter(month, day, notAfter).getTime();
   }
 
-  /* Date of each item = the nearest date heading above it in document
-     order. Cached per element (a rendered item never changes its day). */
-  var itemDates = new WeakMap();
+  /* Date of each item = the date heading directly above it in document
+     order. A heading that can't be read makes the items below it undated
+     — never let them inherit an older heading's day. Recomputed on every
+     call; the maps only hold the latest result. */
+  var itemDates = new WeakMap(); // item -> local midnight in ms
+  var itemDateSources = new WeakMap(); // item -> the heading text it came from
+  var unparsedHeadings = []; // heading texts that were not a readable date
 
   function assignDates(items) {
     if (items.length === 0 || SELECTORS.item.remembered < 0) {
@@ -431,18 +468,48 @@
     var itemCss = SELECTORS.item.candidates[SELECTORS.item.remembered].css;
     var nodes = document.querySelectorAll(itemCss + ", " + DATE_HEADER_CSS);
     var current = null;
+    var source = "";
+    var notAfter = null; // newest first: no later heading is after this day
+    var unparsed = [];
     for (var j = 0; j < nodes.length; j++) {
       var node = nodes[j];
       if (node.matches(itemCss)) {
-        if (current !== null && !itemDates.has(node)) {
+        if (current !== null) {
           itemDates.set(node, current);
+          itemDateSources.set(node, source);
+        } else {
+          itemDates.delete(node);
+          itemDateSources.set(node, source);
+          if (source && unparsed.indexOf(source) < 0) {
+            unparsed.push(source); // only headings that actually head items
+          }
         }
       } else if (!node.closest(itemCss)) {
         // headings inside an item (video titles etc.) are never day headings
-        var d = parseDateHeading(node.textContent);
-        if (d !== null) {
-          current = d;
+        var text = (node.textContent || "").replace(/\s+/g, " ").trim();
+        if (/^\d{4}$/.test(text)) {
+          // a year section: later year-less days belong to it
+          notAfter = new Date(+text, 11, 31).getTime();
+          current = null;
+          source = text;
+          continue;
         }
+        var d = parseDateHeading(text, notAfter);
+        current = d;
+        source = text;
+        if (d !== null) {
+          notAfter = d;
+        }
+      }
+    }
+    if (unparsed.join("|") !== unparsedHeadings.join("|")) {
+      unparsedHeadings = unparsed;
+      if (unparsed.length) {
+        console.log(
+          "erasure: %s heading(s) are not a readable date; items below them count as undated: %o",
+          unparsed.length,
+          unparsed
+        );
       }
     }
   }
@@ -555,6 +622,22 @@
     return true;
   }
 
+  var TIME_RE = /\b\d{1,2}:\d{2}(?::\d{2})?(\s?[AaPp]\.?[Mm]\.?)?/;
+
+  // "06:23 • Details", a thumbnail's "0:22", a lone "•" or "Details"
+  function isMetaLine(l) {
+    return (
+      l.length < 40 &&
+      (/^[•·]?\s*details$/i.test(l) ||
+        /^[•·]$/.test(l) ||
+        (TIME_RE.test(l) && /^[\d:\s•·.apm]*(details)?$/i.test(l)))
+    );
+  }
+
+  // the action line of an item ("Commented on …", "Video kommentiert", …)
+  var ACTION_RE =
+    /^(commented on|replied to|you (commented|replied)|user commented|antwort auf|kommentar zu|nutzer hat)|kommentiert$|\bcommented on\b/i;
+
   /* What the manager shows for an item. Also tags the item with its id;
      the counter lives on window so a second list run in the same document
      never reuses an id. */
@@ -565,23 +648,76 @@
       id = String(window.__erasureNextId);
       item.setAttribute("data-erasure-id", id);
     }
-    var link = Array.prototype.find.call(item.querySelectorAll("a[href]"), function (a) {
+    // the video / post link, preferred over channel links in the same item
+    var links = Array.prototype.filter.call(item.querySelectorAll("a[href]"), function (a) {
       return /(^|\.)youtube\.com\/|youtu\.be\//.test(a.href);
     });
+    var videoLinks = links.filter(function (a) {
+      return /\/watch\?|\/shorts\/|\/post\/|\/live\/|youtu\.be\//.test(a.href);
+    });
+    // the title link, not the thumbnail link to the same video (text "0:22")
+    var link =
+      videoLinks.find(function (a) {
+        var t = a.textContent.trim();
+        return t && !isMetaLine(t);
+      }) ||
+      videoLinks[0] ||
+      links[0];
     var title = link ? link.textContent.trim() : "";
+    if (isMetaLine(title)) {
+      title = "";
+    }
+    // button captions (an icon font's "close", an "X") are not item text
+    var buttonTexts = Array.prototype.map.call(item.querySelectorAll("button"), function (b) {
+      return (b.innerText || "").trim();
+    });
     var lines = (item.innerText || "")
       .split("\n")
       .map(function (l) {
         return l.trim();
       })
       .filter(Boolean);
-    var time = "";
+    /* Item layout (seen live, German UI, Oct 2026): "YouTube", the
+       comment, an action line ("Privates Video kommentiert", "Antwort auf
+       einen Kommentar zu einem privaten Video: <link>"), a thumbnail with
+       the video length ("0:22") and "06:23 • Details". Split that into
+       comment text, action line ("context") and time of day. */
+    var timeLines = [];
+    var detailsAt = -1;
+    var rest = [];
+    lines.forEach(function (l, i) {
+      if (isMetaLine(l)) {
+        if (/details/i.test(l)) {
+          detailsAt = i;
+        }
+        if (TIME_RE.test(l)) {
+          timeLines.push(i);
+        }
+      } else if (!/^youtube$/i.test(l) && l !== title && buttonTexts.indexOf(l) < 0) {
+        rest.push(l);
+      }
+    });
+    // the time sits on the "• Details" line, not on the thumbnail
+    var timeAt = timeLines.filter(function (i) {
+      return /[•·]|details/i.test(lines[i]);
+    })[0];
+    if (timeAt === undefined && detailsAt >= 0) {
+      timeAt = timeLines
+        .filter(function (i) {
+          return i < detailsAt;
+        })
+        .pop();
+    }
+    if (timeAt === undefined) {
+      timeAt = timeLines[timeLines.length - 1];
+    }
+    var time = timeAt === undefined ? "" : TIME_RE.exec(lines[timeAt])[0];
+    var context = [];
     var text = [];
-    lines.forEach(function (l) {
-      var t = /\b\d{1,2}:\d{2}(\s?[AaPp]\.?[Mm]\.?)?/.exec(l);
-      if (t && l.length < 40) {
-        time = time || t[0]; // the "10:23 AM • Details" line
-      } else if (l !== title && !/^youtube$/i.test(l)) {
+    rest.forEach(function (l) {
+      if ((title && l.indexOf(title) >= 0) || ACTION_RE.test(l)) {
+        context.push(l);
+      } else {
         text.push(l);
       }
     });
@@ -593,8 +729,10 @@
     return {
       id: id,
       date: date === undefined ? null : date,
+      dateSource: itemDateSources.get(item) || "",
       time: time,
       text: m ? label.slice(m[0].length) : text.join(" "),
+      context: context.join(" "),
       title: title,
       url: link ? link.href : "",
       full: lines.join("\n"),
@@ -609,7 +747,12 @@
     if (hasExtensionMessaging) {
       try {
         chrome.runtime.sendMessage(
-          { type: "erasure:items", items: list, complete: complete },
+          {
+            type: "erasure:items",
+            items: list,
+            complete: complete,
+            unparsedHeadings: unparsedHeadings.slice(0, 20),
+          },
           function () {
             void chrome.runtime.lastError;
           }
@@ -853,9 +996,10 @@
     };
   }
 
-  /* Broadcast progress to the popup. The popup is usually closed — a
-     missing receiver must never throw or spam the console, so the
-     lastError read below deliberately swallows it. */
+  /* Broadcast progress to the manager. It may be closed (or the script
+     pasted into the console) — a missing receiver must never throw or
+     spam the console, so the lastError read below deliberately
+     swallows it. */
   function report() {
     if (!hasExtensionMessaging) {
       return;
@@ -1015,7 +1159,7 @@
 
   /* Popup control channel: "erasure:stop" flips the flag the loop checks
      each iteration; "erasure:status" answers with the current snapshot so
-     a (re)opened popup can resume showing progress. The previous run's
+     a (re)opened manager can resume showing progress. The previous run's
      listener (if any) is replaced — the injection guard above guarantees
      no live run owns it. */
   if (hasExtensionMessaging && chrome.runtime.onMessage) {
@@ -1086,7 +1230,7 @@
       setState("error", "could not read item dates — nothing deleted (see console)");
     } else {
       runStartedAt = performance.now();
-      report(); // announce the run to an already-open popup
+      report(); // announce the run to the manager
       // one dialog watcher covers the whole run (attempts overlap now)
       var stopDialogWatch = watchForConsentDialog();
       var outcome;
