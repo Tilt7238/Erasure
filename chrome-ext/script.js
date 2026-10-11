@@ -1,4 +1,11 @@
 (async function () {
+  /* Run options, set by the popup right before injection (see popup.js).
+     Pasted into the console without them, the defaults apply: newest
+     first, no date limit. Consumed here so a stale set never leaks into a
+     later run. */
+  var OPTIONS = window.__erasureOptions || {};
+  delete window.__erasureOptions;
+
   /* Re-injection guard: clicking the popup's delete button again (or
      re-pasting the script) while a run is active must not start a second,
      interleaved loop. The whole body is inside this IIFE so a duplicate
@@ -84,6 +91,29 @@
     },
   };
 
+  /* Day headings of the My Activity list ("Today", "Yesterday", "Jul 3",
+     "3. Juli 2024", …). Every item belongs to the nearest date heading
+     above it. Unverified against the live page — if no item gets a date,
+     a date-limited run aborts before deleting anything. */
+  var DATE_HEADER_CSS = 'h2, h3, [role="heading"]';
+
+  // delete newest first (page order) or oldest first (bottom up — needs the
+  // whole list loaded before the first click)
+  var OLDEST_FIRST = !!OPTIONS.oldestFirst;
+
+  // only delete items dated on or before this day (local midnight, ms);
+  // null = no limit. Items without a readable date are never deleted then.
+  var CUTOFF = parseIsoDay(OPTIONS.cutoffDate);
+
+  /* What this run does (the manager page drives the last two):
+     "auto"  delete everything matching the options (popup / console)
+     "list"  load the whole list and send every item to the manager
+     "ids"   delete only the items the manager selected, by the ids
+             ("data-erasure-id") a "list" run gave them in this document */
+  var MODE =
+    OPTIONS.mode === "list" ? "list" : Array.isArray(OPTIONS.ids) ? "ids" : "auto";
+  var SELECTED_IDS = MODE === "ids" ? new Set(OPTIONS.ids.map(String)) : null;
+
   // deletions kept in flight at once. Google's per-delete latency (~3 s
   // observed live) dominates a sequential run, so overlapping independent
   // deletes multiplies throughput when Google processes them in parallel
@@ -109,6 +139,9 @@
   // consecutive empty re-checks (scroll + observe, NEW_ITEMS_TIMEOUT each)
   // that find nothing before declaring the run done
   var EMPTY_RECHECK_LIMIT = 3;
+
+  // an id run deletes a known set — nothing more can scroll into view
+  var END_RECHECKS = MODE === "ids" ? 0 : EMPTY_RECHECK_LIMIT;
 
   // scroll for the next page (fire-and-forget) whenever fewer than this many
   // deletable items remain, so loading overlaps with the tail of deletions
@@ -138,6 +171,7 @@
   var stopRequested = false; // set by the popup's Stop button
   var currentState = "running"; // running | scrolling | done | error
   var currentDetail = "";
+  var wakeUp = null; // resolves waitUntilVisible() early on stop
 
   // chrome.runtime is only available when injected as an extension content
   // script — feature-detect so pasting into the DevTools console still works
@@ -282,27 +316,327 @@
     return false;
   }
 
-  // first comment item we haven't given up on or already dispatched
-  function nextItem() {
-    var items = allItems();
-    for (var j = 0; j < items.length; j++) {
-      if (!skippedItems.has(items[j]) && !inFlightItems.has(items[j])) {
-        return items[j];
-      }
+  // ---- item dates ----
+
+  // "YYYY-MM-DD" (the popup's <input type="date">) -> local midnight in ms
+  function parseIsoDay(s) {
+    var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s || "");
+    if (!m) {
+      return null;
     }
-    return null;
+    return new Date(+m[1], +m[2] - 1, +m[3]).getTime();
   }
 
-  // how many comment items remain to be dispatched
-  function deletableCount() {
-    var items = allItems();
-    var n = 0;
-    for (var j = 0; j < items.length; j++) {
-      if (!skippedItems.has(items[j]) && !inFlightItems.has(items[j])) {
-        n++;
+  function normalizeWord(s) {
+    return s.toLowerCase().replace(/[.,]/g, " ").replace(/\s+/g, " ").trim();
+  }
+
+  /* Month/weekday names and "today"/"yesterday" in the page's language,
+     plus English and German, built from Intl so no locale table is
+     hard-coded. */
+  var DATE_WORDS = (function () {
+    var words = {
+      months: new Map(),
+      weekdays: new Map(),
+      today: new Set(),
+      yesterday: new Set(),
+    };
+    var langs = [document.documentElement.lang, "en", "de"].filter(Boolean);
+    langs.forEach(function (lang) {
+      try {
+        ["long", "short"].forEach(function (style) {
+          var monthFmt = new Intl.DateTimeFormat(lang, { month: style });
+          var dayFmt = new Intl.DateTimeFormat(lang, { weekday: style });
+          for (var m = 0; m < 12; m++) {
+            words.months.set(normalizeWord(monthFmt.format(new Date(2000, m, 15))), m);
+          }
+          for (var d = 0; d < 7; d++) {
+            // 2000-01-02 was a Sunday, so d matches Date.getDay()
+            words.weekdays.set(normalizeWord(dayFmt.format(new Date(2000, 0, 2 + d))), d);
+          }
+        });
+        var rel = new Intl.RelativeTimeFormat(lang, { numeric: "auto" });
+        words.today.add(normalizeWord(rel.format(0, "day")));
+        words.yesterday.add(normalizeWord(rel.format(-1, "day")));
+      } catch (e) {
+        // unsupported locale tag — the other languages still apply
+      }
+    });
+    return words;
+  })();
+
+  /* Parse a day heading to local midnight in ms, or null. Strict: every
+     token must be a day, month, year or weekday, so headings that are not
+     dates (or comment text) never parse. */
+  function parseDateHeading(text) {
+    var t = normalizeWord(text || "");
+    if (!t || t.length > 40) {
+      return null;
+    }
+    var now = new Date();
+    var today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    if (DATE_WORDS.today.has(t)) {
+      return today.getTime();
+    }
+    if (DATE_WORDS.yesterday.has(t)) {
+      return new Date(today.getFullYear(), today.getMonth(), today.getDate() - 1).getTime();
+    }
+    if (DATE_WORDS.weekdays.has(t)) {
+      // a bare weekday means the most recent such day before today
+      var back = (today.getDay() - DATE_WORDS.weekdays.get(t) + 7) % 7 || 7;
+      return new Date(today.getFullYear(), today.getMonth(), today.getDate() - back).getTime();
+    }
+    var day = null;
+    var month = null;
+    var year = null;
+    var tokens = t.split(" ");
+    for (var k = 0; k < tokens.length; k++) {
+      var tok = tokens[k];
+      if (/^\d{4}$/.test(tok) && year === null) {
+        year = +tok;
+      } else if (/^\d{1,2}$/.test(tok) && day === null) {
+        day = +tok;
+      } else if (DATE_WORDS.months.has(tok) && month === null) {
+        month = DATE_WORDS.months.get(tok);
+      } else if (!DATE_WORDS.weekdays.has(tok)) {
+        return null;
       }
     }
-    return n;
+    if (day === null || month === null) {
+      return null;
+    }
+    var yearGiven = year !== null;
+    if (!yearGiven) {
+      year = today.getFullYear();
+    }
+    var date = new Date(year, month, day);
+    if (date.getDate() !== day) {
+      return null; // e.g. "Feb 30"
+    }
+    if (!yearGiven && date > today) {
+      // headings omit the current year only; a future day is last year's
+      date = new Date(year - 1, month, day);
+    }
+    return date.getTime();
+  }
+
+  /* Date of each item = the nearest date heading above it in document
+     order. Cached per element (a rendered item never changes its day). */
+  var itemDates = new WeakMap();
+
+  function assignDates(items) {
+    if (items.length === 0 || SELECTORS.item.remembered < 0) {
+      return;
+    }
+    var itemCss = SELECTORS.item.candidates[SELECTORS.item.remembered].css;
+    var nodes = document.querySelectorAll(itemCss + ", " + DATE_HEADER_CSS);
+    var current = null;
+    for (var j = 0; j < nodes.length; j++) {
+      var node = nodes[j];
+      if (node.matches(itemCss)) {
+        if (current !== null && !itemDates.has(node)) {
+          itemDates.set(node, current);
+        }
+      } else if (!node.closest(itemCss)) {
+        // headings inside an item (video titles etc.) are never day headings
+        var d = parseDateHeading(node.textContent);
+        if (d !== null) {
+          current = d;
+        }
+      }
+    }
+  }
+
+  // with a date limit: at least one item has a readable date (or there are
+  // no items at all, so there is nothing to misjudge)
+  function datesReadable() {
+    var items = allItems();
+    assignDates(items);
+    return (
+      items.length === 0 ||
+      items.some(function (it) {
+        return itemDates.has(it);
+      })
+    );
+  }
+
+  function withinCutoff(item) {
+    if (SELECTED_IDS && !SELECTED_IDS.has(item.getAttribute("data-erasure-id"))) {
+      return false;
+    }
+    if (CUTOFF === null) {
+      return true;
+    }
+    var d = itemDates.get(item);
+    return d !== undefined && d <= CUTOFF;
+  }
+
+  /* Items still to dispatch, in deletion order: not skipped, not in
+     flight, inside the date limit; oldest (bottom) first if requested. */
+  function pendingItems() {
+    var items = allItems();
+    if (CUTOFF !== null) {
+      assignDates(items);
+    }
+    var pending = items.filter(function (it) {
+      return !skippedItems.has(it) && !inFlightItems.has(it) && withinCutoff(it);
+    });
+    return OLDEST_FIRST ? pending.reverse() : pending;
+  }
+
+  // next item to delete
+  function nextItem() {
+    return pendingItems()[0] || null;
+  }
+
+  // how many items remain to be dispatched
+  function deletableCount() {
+    return pendingItems().length;
+  }
+
+  // items on the page that the date limit protects (newer or undated)
+  function keptCount() {
+    if (CUTOFF === null) {
+      return 0;
+    }
+    var items = allItems();
+    assignDates(items);
+    return items.filter(function (it) {
+      return !withinCutoff(it);
+    }).length;
+  }
+
+  /* Hidden tabs don't render, so My Activity's infinite scroll (and
+     possibly its removal animations) stall there. Wait until the tab is
+     visible again instead of mistaking the stall for the end of the list. */
+  async function waitUntilVisible() {
+    if (!document.hidden || stopRequested) {
+      return;
+    }
+    var state = currentState;
+    var detail = currentDetail;
+    console.log("erasure: tab hidden — paused until it is visible again");
+    setState(state, "paused — bring the My Activity tab to the front");
+    await new Promise(function (resolve) {
+      function done() {
+        document.removeEventListener("visibilitychange", check);
+        wakeUp = null;
+        resolve();
+      }
+      function check() {
+        if (!document.hidden) {
+          done();
+        }
+      }
+      wakeUp = done;
+      document.addEventListener("visibilitychange", check);
+    });
+    setState(state, detail);
+  }
+
+  /* Oldest first: the list is newest-first with infinite scroll, so load
+     it completely before the first deletion. Returns false if stopped. */
+  async function loadAllItems() {
+    var misses = 0;
+    while (misses < EMPTY_RECHECK_LIMIT) {
+      await waitUntilVisible();
+      if (stopRequested) {
+        return false;
+      }
+      setState("loading", allItems().length + " items loaded");
+      autoScroll();
+      var appeared = await waitForNewItems(NEW_ITEMS_TIMEOUT);
+      if (!appeared && document.hidden) {
+        continue; // stalled by hiding, not the end — don't count it
+      }
+      misses = appeared ? 0 : misses + 1;
+    }
+    console.log("erasure: list fully loaded — %s items", allItems().length);
+    return true;
+  }
+
+  /* What the manager shows for an item. Also tags the item with its id;
+     the counter lives on window so a second list run in the same document
+     never reuses an id. */
+  function describeItem(item) {
+    var id = item.getAttribute("data-erasure-id");
+    if (!id) {
+      window.__erasureNextId = (window.__erasureNextId || 0) + 1;
+      id = String(window.__erasureNextId);
+      item.setAttribute("data-erasure-id", id);
+    }
+    var link = Array.prototype.find.call(item.querySelectorAll("a[href]"), function (a) {
+      return /(^|\.)youtube\.com\/|youtu\.be\//.test(a.href);
+    });
+    var title = link ? link.textContent.trim() : "";
+    var lines = (item.innerText || "")
+      .split("\n")
+      .map(function (l) {
+        return l.trim();
+      })
+      .filter(Boolean);
+    var time = "";
+    var text = [];
+    lines.forEach(function (l) {
+      var t = /\b\d{1,2}:\d{2}(\s?[AaPp]\.?[Mm]\.?)?/.exec(l);
+      if (t && l.length < 40) {
+        time = time || t[0]; // the "10:23 AM • Details" line
+      } else if (l !== title && !/^youtube$/i.test(l)) {
+        text.push(l);
+      }
+    });
+    // English UI: the delete button's label carries exactly the comment
+    var del = pick(item, "deleteX");
+    var label = (del && del.getAttribute("aria-label")) || "";
+    var m = /^delete activity item\s+/i.exec(label);
+    var date = itemDates.get(item);
+    return {
+      id: id,
+      date: date === undefined ? null : date,
+      time: time,
+      text: m ? label.slice(m[0].length) : text.join(" "),
+      title: title,
+      url: link ? link.href : "",
+      full: lines.join("\n"),
+    };
+  }
+
+  function sendItems(complete) {
+    var items = allItems();
+    assignDates(items);
+    var list = items.map(describeItem);
+    console.log("erasure: sending %s items to the manager", list.length);
+    if (hasExtensionMessaging) {
+      try {
+        chrome.runtime.sendMessage(
+          { type: "erasure:items", items: list, complete: complete },
+          function () {
+            void chrome.runtime.lastError;
+          }
+        );
+      } catch (e) {
+        // extension reloaded — nobody to send to
+      }
+    }
+    return list.length;
+  }
+
+  // tell the manager what became of one of its items
+  function reportItem(item, result) {
+    var id = item.getAttribute("data-erasure-id");
+    if (!id || !hasExtensionMessaging) {
+      return;
+    }
+    try {
+      chrome.runtime.sendMessage(
+        { type: "erasure:item", id: id, result: result },
+        function () {
+          void chrome.runtime.lastError;
+        }
+      );
+    } catch (e) {
+      // extension reloaded — keep going
+    }
   }
 
   // visible enough to interact with (covers display:none and detached shells;
@@ -392,6 +726,7 @@
       unconfirmedItems.delete(item);
       deletedCount++;
       console.debug("erasure: removal confirmed late for an item");
+      reportItem(item, "deleted");
       report();
       return;
     }
@@ -409,6 +744,7 @@
       unconfirmedItems.delete(item);
       skippedItems.add(item);
       skippedCount++;
+      reportItem(item, "skipped");
       report();
     }
   }
@@ -459,6 +795,7 @@
         failMap.delete(it);
         deletedCount++;
         late++;
+        reportItem(it, "deleted");
       }
     });
     skippedItems.forEach(function (it) {
@@ -467,6 +804,7 @@
         skippedCount--;
         deletedCount++;
         late++;
+        reportItem(it, "deleted");
       }
     });
     if (late > 0) {
@@ -563,6 +901,7 @@
       failMap.delete(item);
       unconfirmedItems.delete(item);
       console.debug("erasure: deleted in %s ms", elapsed);
+      reportItem(item, "deleted");
       report();
       // recovery: shrink the inter-item wait back toward zero
       backoffMs = backoffMs / 2;
@@ -592,7 +931,7 @@
       .then(function () {
         inFlightItems.delete(item);
         inFlight.delete(p);
-        if (deletableCount() < LOW_WATER_MARK) {
+        if (MODE !== "ids" && deletableCount() < LOW_WATER_MARK) {
           // start loading the next page while the tail drains
           autoScroll();
         }
@@ -606,6 +945,7 @@
      re-checks with nothing left in flight. */
   async function run() {
     while (true) {
+      await waitUntilVisible();
       if (stopRequested) {
         if (inFlight.size > 0) {
           // let the already-clicked deletions settle so counts are honest
@@ -629,7 +969,7 @@
         commentsAvailable2();
       }
       if (inFlight.size === 0) {
-        if (emptyChecks >= EMPTY_RECHECK_LIMIT) {
+        if (emptyChecks >= END_RECHECKS) {
           return "complete";
         }
         emptyChecks++;
@@ -650,7 +990,13 @@
         autoScroll();
         var waitStarted = performance.now();
         var appeared = await waitForNewItems(NEW_ITEMS_TIMEOUT);
+        if (!appeared && document.hidden) {
+          emptyChecks--; // stalled by hiding, not the end — don't count it
+        }
         if (appeared) {
+          // new items count as progress even if the date limit protects
+          // them all — the eligible ones may be further down
+          emptyChecks = 0;
           console.debug(
             "erasure: more items appeared after %s ms",
             Math.round(performance.now() - waitStarted)
@@ -679,6 +1025,9 @@
     window.__erasureOnMessage = function (msg, sender, sendResponse) {
       if (msg && msg.type === "erasure:stop") {
         stopRequested = true;
+        if (wakeUp) {
+          wakeUp();
+        }
         console.log("erasure: stop requested");
         sendResponse({ ok: true });
       } else if (msg && msg.type === "erasure:status") {
@@ -688,8 +1037,54 @@
     chrome.runtime.onMessage.addListener(window.__erasureOnMessage);
   }
 
+  // the done-message detail, mentioning items the date limit protected
+  function doneDetail(base) {
+    var kept = keptCount();
+    return kept > 0 ? base + ", " + kept + " newer items kept" : base;
+  }
+
   try {
-    if (selfCheck()) {
+    console.log(
+      "erasure: options — %s, %s",
+      OLDEST_FIRST ? "oldest first" : "newest first",
+      CUTOFF === null
+        ? "no date limit"
+        : "only items up to " + new Date(CUTOFF).toDateString()
+    );
+    var layoutOk = selfCheck();
+    var loaded = true;
+    // ids the manager selected that are no longer on this page
+    var missingIds = SELECTED_IDS
+      ? Array.from(SELECTED_IDS).filter(function (id) {
+          return !document.querySelector('[data-erasure-id="' + CSS.escape(id) + '"]');
+        }).length
+      : 0;
+    if (layoutOk && MODE === "list") {
+      loaded = await loadAllItems();
+      var count = sendItems(loaded);
+      setState("done", count + " items loaded" + (loaded ? "" : " (stopped early)"));
+    } else if (layoutOk && SELECTED_IDS && missingIds === SELECTED_IDS.size) {
+      console.log("erasure: none of the selected items is on this page");
+      setState("error", "the selected items are no longer on the page — reload the list");
+    } else if (layoutOk && OLDEST_FIRST && MODE !== "ids") {
+      loaded = await loadAllItems();
+      layoutOk = selfCheck(); // the list may have been empty at startup
+    }
+    if ((layoutOk && MODE === "list") || currentState === "error") {
+      // handled above
+    } else if (!layoutOk) {
+      setState("error", "page layout changed — selectors need updating (see console)");
+    } else if (!loaded) {
+      console.log("erasure: stopped by user while loading.");
+      setState("done", "stopped by user");
+    } else if (CUTOFF !== null && !datesReadable()) {
+      // never guess: without dates the limit can't be honored
+      console.log(
+        "erasure: could not read any item dates (no day heading matched '%s') — nothing deleted",
+        DATE_HEADER_CSS
+      );
+      setState("error", "could not read item dates — nothing deleted (see console)");
+    } else {
       runStartedAt = performance.now();
       report(); // announce the run to an already-open popup
       // one dialog watcher covers the whole run (attempts overlap now)
@@ -702,16 +1097,20 @@
       }
       if (outcome === "stopped") {
         console.log("erasure: stopped by user.");
-        setState("done", "stopped by user");
+        setState("done", doneDetail("stopped by user"));
       } else {
         console.log(
           "erasure: no more items after %s retries, done.",
           EMPTY_RECHECK_LIMIT
         );
-        setState("done", "all items processed");
+        setState(
+          "done",
+          doneDetail(
+            "all items processed" +
+              (missingIds ? ", " + missingIds + " selected items not found on the page" : "")
+          )
+        );
       }
-    } else {
-      setState("error", "page layout changed — selectors need updating (see console)");
     }
     logSummary();
   } catch (e) {
