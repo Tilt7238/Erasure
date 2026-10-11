@@ -36,7 +36,7 @@ If you use **Export**, the CSV or JSON file is created locally and saved to your
 
 ## Changes and contact
 
-Changes to this policy are published in this file. Questions: via [GitHub](https://github.com/Tilt7238).
+Changes to this policy are published in this file. Questions or problems: please open an [issue on GitHub](https://github.com/Tilt7238/YoutubeCommentDeleter/issues).
 
 ---
 
@@ -78,4 +78,4 @@ Wenn du **Export** nutzt, wird die CSV- oder JSON-Datei lokal erzeugt und nur au
 
 ## Änderungen und Kontakt
 
-Änderungen dieser Erklärung werden in dieser Datei veröffentlicht. Fragen: über [GitHub](https://github.com/Tilt7238).
+Änderungen dieser Erklärung werden in dieser Datei veröffentlicht. Bei Fragen oder Problemen eröffne bitte ein [Issue auf GitHub](https://github.com/Tilt7238/YoutubeCommentDeleter/issues).

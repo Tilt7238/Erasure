@@ -39,6 +39,8 @@ To update, unpack the new version into the same folder and click ↻ on the exte
 
 Deleted items cannot be restored — export a backup first if you might want them later.
 
+Problems or ideas? Please open an [issue](https://github.com/Tilt7238/YoutubeCommentDeleter/issues).
+
 ## Permissions
 
 - **Access to `myactivity.google.com`** — to read your history list and click its delete buttons on your behalf.
