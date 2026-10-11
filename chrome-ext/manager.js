@@ -21,9 +21,11 @@ const ACTIVITY_URL = /^https:\/\/myactivity\.google\.com\//;
 // how long the My Activity page may take to load (sign-in prompts included)
 const LOAD_TIMEOUT = 60000;
 
-// marks an item whose video is gone (deleted, private, unavailable)
+// marks an item whose video is gone: "Privates Video kommentiert", "…zu einem
+// privaten Video: …", "Nutzer hat ein nicht verfügbares Video kommentiert",
+// "Commented on a private video", "Deleted video", …
 const UNAVAILABLE_RE =
-  /\b(deleted|private|unavailable|removed) video\b|\bvideo (is )?(unavailable|private|removed)|nicht (mehr )?verfügbar|gelöschtes video|privates video|video wurde entfernt/i;
+  /\b(deleted|private|unavailable|removed) video\b|\bvideo (is )?(unavailable|private|removed)|nicht (mehr )?verfügbar|\b(gelöscht|privat|entfernt)\w* video|video wurde (entfernt|gelöscht)/i;
 
 // group key of an item's video / post link ("" without a link)
 function videoKey(url) {
@@ -51,7 +53,7 @@ function videoKey(url) {
 let currentType = "comments"; // selected type tab
 let listType = null; // type the loaded list belongs to
 let items = []; // [{id, date, dateSource, time, text, title, url, full, status}] in page order
-let rowsById = new Map(); // id -> {item, tr, cb, textTd, linkEl, stateTd}
+let rowsById = new Map(); // id -> {item, tr, cb, textEl, linkEl, stateTd, match}
 let selected = new Set(); // selected item ids
 let lastClickedId = null; // anchor for shift-click ranges
 let groups = new Map(); // video key -> {key, title, url, unavailable, items, tr, cb, twisty, meta}
@@ -201,6 +203,14 @@ function renderList() {
     }
     const textTd = cell(tr, "text");
     textTd.title = it.full;
+    const textEl = document.createElement("div");
+    textTd.appendChild(textEl);
+    if (it.context) {
+      const ctx = document.createElement("div");
+      ctx.className = "context";
+      ctx.textContent = it.context;
+      textTd.appendChild(ctx);
+    }
     const videoTd = cell(tr, "video");
     let linkEl = null;
     if (it.url) {
@@ -217,7 +227,7 @@ function renderList() {
       videoTd.appendChild(badge);
     }
     const stateTd = cell(tr, "state");
-    rowsById.set(it.id, { item: it, tr, cb, textTd, linkEl, stateTd, match: true });
+    rowsById.set(it.id, { item: it, tr, cb, textEl, linkEl, stateTd, match: true });
   });
   buildGroups();
   emptyNote.hidden = items.length > 0;
@@ -293,7 +303,7 @@ function updateGroupHeaders() {
     const sel = selectable.filter((r) => selected.has(r.item.id)).length;
     const deleted = rowsOf.filter((r) => r.item.status === "deleted").length;
     const dates = groupDates(g);
-    const parts = [g.items.length + " " + label];
+    const parts = [g.items.length + " " + (g.items.length === 1 ? label.replace(/s$/, "") : label)];
     if (matching.length < g.items.length) parts.push(matching.length + " match");
     if (sel) parts.push(sel + " selected");
     if (deleted) parts.push(deleted + " deleted");
@@ -433,7 +443,7 @@ function applyView(force) {
     r.match = matchesView(r.item, q, from, to, show);
     r.tr.classList.toggle("member", byVideo);
     if (rehighlight) {
-      highlight(r.textTd, r.item.text || "(no text)", q);
+      highlight(r.textEl, r.item.text || "(no text)", q);
       if (r.linkEl) {
         highlight(r.linkEl, r.item.title || r.item.url, q);
       }
@@ -672,6 +682,7 @@ function exportRecords() {
       date: it.date === null ? "" : isoDay(it.date),
       time: it.time,
       text: it.text,
+      context: it.context || "",
       video: it.title,
       url: it.url,
       unavailable: it.unavailable ? "yes" : "",
@@ -686,7 +697,7 @@ function exportName(ext) {
 
 exportCsv.onclick = function () {
   const recs = exportRecords();
-  const cols = ["date", "time", "text", "video", "url", "unavailable", "status"];
+  const cols = ["date", "time", "text", "context", "video", "url", "unavailable", "status"];
   const quote = (v) => '"' + String(v).replace(/"/g, '""') + '"';
   const lines = [cols.join(",")].concat(recs.map((r) => cols.map((c) => quote(r[c])).join(",")));
   // BOM so Excel reads UTF-8
@@ -1068,7 +1079,13 @@ function onItems(msg) {
     Object.assign({}, it, {
       status: undefined,
       videoKey: videoKey(it.url),
-      unavailable: !it.url || UNAVAILABLE_RE.test(it.title) || UNAVAILABLE_RE.test(it.full),
+      // the action line and title decide; the comment text itself must not
+      // (a comment can mention "private video"), unless there is no action line
+      unavailable:
+        !it.url ||
+        UNAVAILABLE_RE.test(it.context || "") ||
+        UNAVAILABLE_RE.test(it.title) ||
+        (!it.context && UNAVAILABLE_RE.test(it.full)),
     })
   );
   expanded.clear();
