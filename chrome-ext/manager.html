@@ -166,6 +166,29 @@
     tr.skipped td.state { color: var(--warn); }
     tr.queued td.state { color: var(--accent); }
     tr[hidden] { display: none; }
+    #videoControls[hidden] { display: none; }
+    tr.vgroup td { background-color: var(--panel); border-bottom-color: var(--bg); }
+    tr.vgroup .title { font-weight: bold; }
+    tr.vgroup .title a { color: #8ab4f8; }
+    tr.vgroup .meta { color: var(--muted); font-size: 12px; margin-left: 8px; }
+    tr.member td.check { padding-left: 20px; }
+    button.twisty {
+        background: none;
+        color: var(--muted);
+        padding: 0 6px 0 0;
+        font-size: 12px;
+    }
+    .badge {
+        display: inline-block;
+        margin-left: 6px;
+        padding: 1px 6px;
+        border-radius: 8px;
+        font-size: 11px;
+        font-weight: normal;
+        background-color: #6d4c41;
+        color: #ffe0b2;
+        vertical-align: middle;
+    }
     .empty { color: var(--muted); padding: 40px 0; text-align: center; }
     </style>
 </head>
@@ -214,11 +237,27 @@
                 <option value="undated">Unknown date</option>
                 <option value="skipped">Skipped</option>
                 <option value="deleted">Deleted</option>
+                <option value="unavailable">Unavailable videos</option>
+            </select>
+            <select id="viewMode" title="List every item, or group them by video">
+                <option value="list">List</option>
+                <option value="video">By video</option>
             </select>
             <select id="sortOrder" title="Sort order">
                 <option value="newest">Newest first</option>
                 <option value="oldest">Oldest first</option>
             </select>
+            <span class="group" id="videoControls" hidden>
+                Videos
+                <select id="groupSort" title="Order of the videos">
+                    <option value="count">Most items</option>
+                    <option value="newest">Newest</option>
+                    <option value="oldest">Oldest</option>
+                    <option value="title">Title A–Z</option>
+                </select>
+                <button id="expandAll" class="secondary small">Expand all</button>
+                <button id="collapseAll" class="secondary small">Collapse all</button>
+            </span>
         </div>
         <div class="row chips" id="yearChips"></div>
         <div class="row">

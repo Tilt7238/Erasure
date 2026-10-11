@@ -631,9 +631,14 @@
       id = String(window.__erasureNextId);
       item.setAttribute("data-erasure-id", id);
     }
-    var link = Array.prototype.find.call(item.querySelectorAll("a[href]"), function (a) {
+    // the video / post link, preferred over channel links in the same item
+    var links = Array.prototype.filter.call(item.querySelectorAll("a[href]"), function (a) {
       return /(^|\.)youtube\.com\/|youtu\.be\//.test(a.href);
     });
+    var link =
+      links.find(function (a) {
+        return /\/watch\?|\/shorts\/|\/post\/|\/live\/|youtu\.be\//.test(a.href);
+      }) || links[0];
     var title = link ? link.textContent.trim() : "";
     var lines = (item.innerText || "")
       .split("\n")

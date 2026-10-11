@@ -41,3 +41,8 @@ The toolbar icon now opens the manager window directly (the small popup is gone)
 - progress bar with time estimate; the delete confirmation names the date range and warns about selected items hidden by filters
 - quick delete: delete everything (or everything up to a date) without loading the list first — the former popup function
 - "Open in My Activity" opens the history page in the browser
+
+Update 2.6.0:
+
+"By video" view: items grouped per video (or post) with count and date range, collapsible, sortable by number of items, date or title; one checkbox selects a video's items.
+Items on removed, private or otherwise unavailable videos (no video link, or titles like "Deleted video") are marked "unavailable" and can be shown with the "Unavailable videos" filter — e.g. to delete them all at once.
