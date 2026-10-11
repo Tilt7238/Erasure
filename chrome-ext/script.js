@@ -54,6 +54,7 @@
     deleteX: {
       candidates: [
         { css: 'button[aria-label*="delete" i]' }, // verified 2026-07
+        { css: 'button[aria-label*="löschen" i]' }, // German UI
         { css: ".VfPpkd-Bz112c-LgbsSe" },
       ],
       remembered: -1,
@@ -621,6 +622,22 @@
     return true;
   }
 
+  var TIME_RE = /\b\d{1,2}:\d{2}(?::\d{2})?(\s?[AaPp]\.?[Mm]\.?)?/;
+
+  // "06:23 • Details", a thumbnail's "0:22", a lone "•" or "Details"
+  function isMetaLine(l) {
+    return (
+      l.length < 40 &&
+      (/^[•·]?\s*details$/i.test(l) ||
+        /^[•·]$/.test(l) ||
+        (TIME_RE.test(l) && /^[\d:\s•·.apm]*(details)?$/i.test(l)))
+    );
+  }
+
+  // the action line of an item ("Commented on …", "Video kommentiert", …)
+  var ACTION_RE =
+    /^(commented on|replied to|you (commented|replied)|user commented|antwort auf|kommentar zu|nutzer hat)|kommentiert$|\bcommented on\b/i;
+
   /* What the manager shows for an item. Also tags the item with its id;
      the counter lives on window so a second list run in the same document
      never reuses an id. */
@@ -635,24 +652,72 @@
     var links = Array.prototype.filter.call(item.querySelectorAll("a[href]"), function (a) {
       return /(^|\.)youtube\.com\/|youtu\.be\//.test(a.href);
     });
+    var videoLinks = links.filter(function (a) {
+      return /\/watch\?|\/shorts\/|\/post\/|\/live\/|youtu\.be\//.test(a.href);
+    });
+    // the title link, not the thumbnail link to the same video (text "0:22")
     var link =
-      links.find(function (a) {
-        return /\/watch\?|\/shorts\/|\/post\/|\/live\/|youtu\.be\//.test(a.href);
-      }) || links[0];
+      videoLinks.find(function (a) {
+        var t = a.textContent.trim();
+        return t && !isMetaLine(t);
+      }) ||
+      videoLinks[0] ||
+      links[0];
     var title = link ? link.textContent.trim() : "";
+    if (isMetaLine(title)) {
+      title = "";
+    }
+    // button captions (an icon font's "close", an "X") are not item text
+    var buttonTexts = Array.prototype.map.call(item.querySelectorAll("button"), function (b) {
+      return (b.innerText || "").trim();
+    });
     var lines = (item.innerText || "")
       .split("\n")
       .map(function (l) {
         return l.trim();
       })
       .filter(Boolean);
-    var time = "";
+    /* Item layout (seen live, German UI, Oct 2026): "YouTube", the
+       comment, an action line ("Privates Video kommentiert", "Antwort auf
+       einen Kommentar zu einem privaten Video: <link>"), a thumbnail with
+       the video length ("0:22") and "06:23 • Details". Split that into
+       comment text, action line ("context") and time of day. */
+    var timeLines = [];
+    var detailsAt = -1;
+    var rest = [];
+    lines.forEach(function (l, i) {
+      if (isMetaLine(l)) {
+        if (/details/i.test(l)) {
+          detailsAt = i;
+        }
+        if (TIME_RE.test(l)) {
+          timeLines.push(i);
+        }
+      } else if (!/^youtube$/i.test(l) && l !== title && buttonTexts.indexOf(l) < 0) {
+        rest.push(l);
+      }
+    });
+    // the time sits on the "• Details" line, not on the thumbnail
+    var timeAt = timeLines.filter(function (i) {
+      return /[•·]|details/i.test(lines[i]);
+    })[0];
+    if (timeAt === undefined && detailsAt >= 0) {
+      timeAt = timeLines
+        .filter(function (i) {
+          return i < detailsAt;
+        })
+        .pop();
+    }
+    if (timeAt === undefined) {
+      timeAt = timeLines[timeLines.length - 1];
+    }
+    var time = timeAt === undefined ? "" : TIME_RE.exec(lines[timeAt])[0];
+    var context = [];
     var text = [];
-    lines.forEach(function (l) {
-      var t = /\b\d{1,2}:\d{2}(\s?[AaPp]\.?[Mm]\.?)?/.exec(l);
-      if (t && l.length < 40) {
-        time = time || t[0]; // the "10:23 AM • Details" line
-      } else if (l !== title && !/^youtube$/i.test(l)) {
+    rest.forEach(function (l) {
+      if ((title && l.indexOf(title) >= 0) || ACTION_RE.test(l)) {
+        context.push(l);
+      } else {
         text.push(l);
       }
     });
@@ -667,6 +732,7 @@
       dateSource: itemDateSources.get(item) || "",
       time: time,
       text: m ? label.slice(m[0].length) : text.join(" "),
+      context: context.join(" "),
       title: title,
       url: link ? link.href : "",
       full: lines.join("\n"),
