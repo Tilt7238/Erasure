@@ -1,56 +1,53 @@
-# Erasure
+<p align="center"><img src="chrome-ext/images/logo/logo.png" width="128" alt="Comment Deleter for YouTube logo"></p>
 
-Delete your YouTube comment history.
+# Comment Deleter for YouTube
 
-Add the Youtube Comment Deleter Chrome extension: 
-https://chromewebstore.google.com/detail/youtube-comment-deleter/lkhceldiinefjkocccdmpgheheeddfmb
+A Chrome extension to view, search and selectively delete your own YouTube history: comments, live chat messages and community posts.
 
-Or navigate to https://www.youtube.com/feed/history/comment_history and then paste the entire script from "script.js" in your javascript console.
+It works on your [Google My Activity](https://myactivity.google.com/) pages, in your own browser. Nothing is sent anywhere — see the [privacy policy](PRIVACY.md).
 
-See CONTRIBUTING.md for todo list.
+## Features
 
-Update 2.2.1:
+- **Complete list** of your comments, live chat messages or community posts, with date, time, text and video.
+- **Search** (Ctrl+F) with highlighted matches, **date range** filter and **year** shortcuts.
+- **By video** view: all your comments grouped per video, with count and date range.
+- **Unavailable videos**: comments on private, deleted or otherwise unavailable videos are marked and can be removed in one go.
+- **Delete** single items (shift-click for ranges), everything shown, or everything up to a date — newest or oldest first.
+- **Quick delete** everything (or everything up to a date) without loading the list first, for very large histories.
+- **Export** the shown items as CSV or JSON as a backup before deleting.
+- Progress bar with time estimate, Stop button, and a confirmation that names the date range before anything is deleted.
 
-Add progress bar and rate-limit handling. 
+## Installation
 
+**Chrome Web Store:** coming soon.
 
+**Manually (developer mode):**
 
-Update 2.3.0:
+1. Download this repository (**Code → Download ZIP**) and unpack it.
+2. Open `chrome://extensions` and switch on **Developer mode** (top right).
+3. Click **Load unpacked** and select the `chrome-ext` folder (the one containing `manifest.json`).
+4. Pin the extension via the puzzle icon in the toolbar.
 
-Optional date limit: delete only items dated on or before a chosen day (newer items are kept).
-Optional oldest-first order: the whole list is loaded first, then deleted from the bottom up.
-Item dates are read from the day headings of the My Activity list; if no date can be read, a date-limited run stops without deleting anything.
-When pasting script.js into the console, set options first, e.g.
-`window.__erasureOptions = { cutoffDate: "2024-12-31", oldestFirst: true };`
+To update, unpack the new version into the same folder and click ↻ on the extension in `chrome://extensions`.
 
-Update 2.4.0:
+## Usage
 
-New manager page ("Open manager" in the popup): loads the complete list of comments, live chats or community posts into a table, where single items (shift-click for ranges), all items, or all items up to a date can be selected and deleted — oldest first if wanted. A text filter narrows the list.
-The manager drives a My Activity tab in your browser window; keep that tab in front while loading or deleting (hidden tabs don't render, so the run pauses until the tab is visible again).
-This needs access to myactivity.google.com (new host permission).
+1. Sign in to Google in Chrome.
+2. Click the extension icon — the manager window opens.
+3. Choose **Comments**, **Live chats** or **Community posts** and click **Load list**. The extension opens the matching My Activity page in a tab of your browser window and reads the whole list. Keep that tab in front while loading or deleting: hidden tabs don't render, so the work pauses until the tab is visible again.
+4. Search, filter and select what you want to remove, then click **Delete selected**.
 
-Update 2.4.1:
+Deleted items cannot be restored — export a backup first if you might want them later.
 
-Fix wrong item dates: items below a day heading that can't be read are now "unknown date" instead of inheriting the previous heading's day. Year-less headings get the right year from the newest-first order, numeric dates (29.03.2015) are understood, and the manager names the headings it couldn't read.
+## Permissions
 
-Update 2.5.0:
+- **Access to `myactivity.google.com`** — to read your history list and click its delete buttons on your behalf.
+- **Scripting** — to run that logic inside the My Activity tab.
 
-The toolbar icon now opens the manager window directly (the small popup is gone); everything happens there:
-- search (Ctrl+F) with highlighted matches, date range filter, year chips with counts, show filter (not deleted / selected / unknown date / skipped / deleted) and newest/oldest sort
-- export the shown items as CSV or JSON as a backup before deleting
-- progress bar with time estimate; the delete confirmation names the date range and warns about selected items hidden by filters
-- quick delete: delete everything (or everything up to a date) without loading the list first — the former popup function
-- "Open in My Activity" opens the history page in the browser
+## Credits
 
-Update 2.6.0:
+This extension is a fork of [Erasure](https://github.com/ian-campbell/Erasure) by Ian Campbell, extended with the manager window, search, filters, by-video view, export and a new logo. Much of the new code was written with the help of [Claude Code](https://claude.com/claude-code).
 
-"By video" view: items grouped per video (or post) with count and date range, collapsible, sortable by number of items, date or title; one checkbox selects a video's items.
-Items on removed, private or otherwise unavailable videos (no video link, or titles like "Deleted video") are marked "unavailable" and can be shown with the "Unavailable videos" filter — e.g. to delete them all at once.
+## License
 
-Update 2.6.1:
-
-Matched to the live German My Activity layout: comments on private or unavailable videos ("Privates Video kommentiert", "…zu einem privaten Video: …", "Nutzer hat ein nicht verfügbares Video kommentiert") are marked unavailable; the action line is shown separately from the comment text; the thumbnail's video length is no longer taken for the time or the video title; German delete buttons are matched directly.
-
-Update 2.7.0:
-
-New logo: comment bubbles flying into a trash can. Sources are in chrome-ext/images/logo/ (logo.svg, and logo-small.svg, a simplified version for the 16 and 32 px icons).
+[MIT](LICENSE.txt)

@@ -1,14 +1,14 @@
 {
-    "name": "YouTube Comment Deleter",
-    "version": "2.7.1",
-    "description": "Clear your YouTube comment history",
+    "name": "Comment Deleter for YouTube",
+    "version": "2.8.0",
+    "description": "View, search and selectively delete your YouTube comments, live chat messages and community posts.",
     "permissions": ["scripting"],
     "host_permissions": ["https://myactivity.google.com/*"],
     "background": {
         "service_worker": "background.js"
     },
     "action": {
-        "default_title": "Open Erasure",
+        "default_title": "Open Comment Deleter for YouTube",
         "default_icon":
         {
             "16": "images/logo_16.png",
