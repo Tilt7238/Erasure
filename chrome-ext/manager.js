@@ -23,8 +23,8 @@ const LOAD_TIMEOUT = 60000;
 
 let currentType = "comments"; // selected type tab
 let listType = null; // type the loaded list belongs to
-let items = []; // [{id, date, time, text, title, url, full, status}]
-let rowsById = new Map(); // id -> {item, tr, cb, stateTd}
+let items = []; // [{id, date, dateSource, time, text, title, url, full, status}] in page order
+let rowsById = new Map(); // id -> {item, tr, cb, textTd, linkEl, stateTd}
 let selected = new Set(); // selected item ids
 let lastClickedId = null; // anchor for shift-click ranges
 
@@ -32,57 +32,43 @@ let lastClickedId = null; // anchor for shift-click ranges
    browser window, active, because hidden tabs don't render and My
    Activity's infinite scroll stalls there. */
 let worker = null; // {tabId, windowId}
-let busy = null; // null | "opening" | "loading" | "deleting"
+let busy = null; // null | "opening" | "loading" | "deleting" | "quick"
 let stale = false; // the worker document no longer holds the listed items
 let pendingLoad = null; // navigation of the worker tab we are waiting for
-let deleteTotal = 0;
+let runInfo = null; // {total, started} of the running delete, for the ETA
 
-// ---- status + controls ----
+// ---- small helpers ----
 
-function setStatus(text, isError) {
-  statusLine.textContent = text;
-  statusLine.classList.toggle("error", !!isError);
-}
-
-function pendingSelection() {
-  return items.filter(function (it) {
-    return selected.has(it.id) && it.status !== "deleted";
-  });
-}
-
-function refresh() {
-  const n = pendingSelection().length;
-  loadButton.disabled = !!busy;
-  stopButton.disabled = busy !== "loading" && busy !== "deleting";
-  showTabButton.disabled = !worker;
-  deleteSelected.disabled = !!busy || stale || n === 0;
-  deleteSelected.textContent = "Delete selected" + (n ? " (" + n + ")" : "");
-  typeTabs.querySelectorAll("button").forEach(function (b) {
-    b.disabled = !!busy;
-    b.classList.toggle("active", b.dataset.type === currentType);
-  });
-
-  const deleted = items.filter((it) => it.status === "deleted").length;
-  const skipped = items.filter((it) => it.status === "skipped").length;
-  const undated = items.filter((it) => it.date === null).length;
-  const parts = [];
-  if (items.length) {
-    parts.push(items.length + " " + TYPES[listType].label);
-    parts.push(selected.size + " selected");
-    if (deleted) parts.push(deleted + " deleted");
-    if (skipped) parts.push(skipped + " skipped");
-    if (undated) parts.push(undated + " without a readable date");
+function loadSetting(key, fallback) {
+  try {
+    const v = localStorage.getItem("erasure." + key);
+    return v === null ? fallback : v;
+  } catch (e) {
+    return fallback;
   }
-  if (stale) parts.push("list outdated — load it again before deleting");
-  summary.textContent = parts.join(" · ");
-
-  const visible = visibleRows().filter((r) => r.item.status !== "deleted");
-  const visibleSelected = visible.filter((r) => selected.has(r.item.id)).length;
-  toggleVisible.checked = visible.length > 0 && visibleSelected === visible.length;
-  toggleVisible.indeterminate = visibleSelected > 0 && visibleSelected < visible.length;
 }
 
-// ---- list rendering ----
+function saveSetting(key, value) {
+  try {
+    localStorage.setItem("erasure." + key, String(value));
+  } catch (e) {
+    // not remembered — harmless
+  }
+}
+
+// "YYYY-MM-DD" -> local midnight in ms, or null
+function parseIsoDay(s) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s || "");
+  return m ? new Date(+m[1], m[2] - 1, +m[3]).getTime() : null;
+}
+
+function isoDay(ms) {
+  const d = new Date(ms);
+  return (
+    d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" +
+    String(d.getDate()).padStart(2, "0")
+  );
+}
 
 function formatDate(ms) {
   if (ms === null) {
@@ -94,6 +80,65 @@ function formatDate(ms) {
     day: "numeric",
   });
 }
+
+function formatDuration(ms) {
+  const s = Math.round(ms / 1000);
+  if (s < 60) return s + " s";
+  if (s < 3600) return Math.round(s / 60) + " min";
+  return Math.floor(s / 3600) + " h " + Math.round((s % 3600) / 60) + " min";
+}
+
+// ---- status, progress + controls ----
+
+function setStatus(text, isError) {
+  statusLine.textContent = text;
+  statusLine.classList.toggle("error", !!isError);
+}
+
+// fraction 0..1, or null for "working, total unknown"; hide when !visible
+function setProgress(visible, fraction) {
+  progress.hidden = !visible;
+  progress.classList.toggle("indeterminate", visible && fraction === null);
+  progressFill.style.width = fraction === null ? "" : Math.round(fraction * 100) + "%";
+}
+
+function pendingSelection() {
+  return items.filter((it) => selected.has(it.id) && it.status !== "deleted");
+}
+
+function refresh() {
+  const n = pendingSelection().length;
+  const shown = shownRows();
+  loadButton.disabled = !!busy;
+  quickDelete.disabled = !!busy;
+  stopButton.disabled = !busy || busy === "opening";
+  showTabButton.disabled = !worker;
+  deleteSelected.disabled = !!busy || stale || n === 0;
+  deleteSelected.textContent = "Delete selected" + (n ? " (" + n + ")" : "");
+  exportCsv.disabled = exportJson.disabled = shown.length === 0;
+  typeTabs.querySelectorAll("button").forEach(function (b) {
+    b.disabled = !!busy;
+    b.classList.toggle("active", b.dataset.type === currentType);
+  });
+
+  const count = (status) => items.filter((it) => it.status === status).length;
+  const parts = [];
+  if (items.length) {
+    parts.push(shown.length + " of " + items.length + " " + TYPES[listType].label + " shown");
+    parts.push(selected.size + " selected");
+    if (count("deleted")) parts.push(count("deleted") + " deleted");
+    if (count("skipped")) parts.push(count("skipped") + " skipped");
+  }
+  if (stale) parts.push("list outdated — load it again before deleting");
+  summary.textContent = parts.join(" · ");
+
+  const selectable = shown.filter((r) => r.item.status !== "deleted");
+  const shownSelected = selectable.filter((r) => selected.has(r.item.id)).length;
+  toggleShown.checked = selectable.length > 0 && shownSelected === selectable.length;
+  toggleShown.indeterminate = shownSelected > 0 && shownSelected < selectable.length;
+}
+
+// ---- list rendering ----
 
 function cell(tr, className, text) {
   const td = document.createElement("td");
@@ -108,7 +153,7 @@ function cell(tr, className, text) {
 function renderList() {
   rows.textContent = "";
   rowsById.clear();
-  const frag = document.createDocumentFragment();
+  lastClickedId = null;
   items.forEach(function (it) {
     const tr = document.createElement("tr");
     tr.dataset.id = it.id;
@@ -121,25 +166,24 @@ function renderList() {
       dateTd.appendChild(document.createElement("br"));
       dateTd.appendChild(document.createTextNode(it.time));
     }
-    const textTd = cell(tr, "text", it.text || "(no text)");
+    const textTd = cell(tr, "text");
     textTd.title = it.full;
     const videoTd = cell(tr, "video");
+    let linkEl = null;
     if (it.url) {
-      const a = document.createElement("a");
-      a.href = it.url;
-      a.target = "_blank";
-      a.rel = "noopener";
-      a.textContent = it.title || it.url;
-      videoTd.appendChild(a);
+      linkEl = document.createElement("a");
+      linkEl.href = it.url;
+      linkEl.target = "_blank";
+      linkEl.rel = "noopener";
+      videoTd.appendChild(linkEl);
     }
     const stateTd = cell(tr, "state");
-    frag.appendChild(tr);
-    rowsById.set(it.id, { item: it, tr: tr, cb: cb, stateTd: stateTd });
+    rowsById.set(it.id, { item: it, tr, cb, textTd, linkEl, stateTd });
   });
-  rows.appendChild(frag);
   emptyNote.hidden = items.length > 0;
   emptyNote.textContent = "No items loaded.";
-  applyFilter();
+  renderYearChips();
+  applyView(true);
 }
 
 const STATE_LABELS = { queued: "queued", deleted: "deleted", skipped: "skipped" };
@@ -177,18 +221,186 @@ function setSelected(id, on) {
   row.tr.classList.toggle("selected", on);
 }
 
-function visibleRows() {
-  return Array.from(rowsById.values()).filter((r) => !r.tr.hidden);
+// ---- view: search, date range, show filter, sort ----
+
+// write `text` into `el`, wrapping case-insensitive matches of q in <mark>
+function highlight(el, text, q) {
+  el.textContent = "";
+  if (!q) {
+    el.textContent = text;
+    return;
+  }
+  const lower = text.toLowerCase();
+  let pos = 0;
+  let hit;
+  while ((hit = lower.indexOf(q, pos)) >= 0) {
+    el.appendChild(document.createTextNode(text.slice(pos, hit)));
+    const mark = document.createElement("mark");
+    mark.textContent = text.slice(hit, hit + q.length);
+    el.appendChild(mark);
+    pos = hit + q.length;
+  }
+  el.appendChild(document.createTextNode(text.slice(pos)));
 }
 
-function applyFilter() {
-  const q = filterText.value.trim().toLowerCase();
+let lastQuery = null;
+let lastSort = null;
+
+function matchesView(it, q, from, to, show) {
+  if (q && !(it.text + " " + it.title + " " + it.full).toLowerCase().includes(q)) {
+    return false;
+  }
+  if (from !== null || to !== null) {
+    if (it.date === null || (from !== null && it.date < from) || (to !== null && it.date > to)) {
+      return false;
+    }
+  }
+  switch (show) {
+    case "pending": return it.status !== "deleted";
+    case "selected": return selected.has(it.id);
+    case "undated": return it.date === null;
+    case "skipped": return it.status === "skipped";
+    case "deleted": return it.status === "deleted";
+    default: return true;
+  }
+}
+
+function applyView(force) {
+  const q = searchText.value.trim().toLowerCase();
+  const from = parseIsoDay(dateFrom.value);
+  const to = parseIsoDay(dateTo.value);
+  const show = showFilter.value;
+  const sort = sortOrder.value;
+  if (force || sort !== lastSort) {
+    // page order is newest first
+    const ordered = sort === "oldest" ? items.slice().reverse() : items;
+    const frag = document.createDocumentFragment();
+    ordered.forEach((it) => frag.appendChild(rowsById.get(it.id).tr));
+    rows.appendChild(frag);
+    lastSort = sort;
+  }
+  const rehighlight = force || q !== lastQuery;
   rowsById.forEach(function (r) {
-    const hay = (r.item.text + " " + r.item.title + " " + r.item.full).toLowerCase();
-    r.tr.hidden = !!q && !hay.includes(q);
+    r.tr.hidden = !matchesView(r.item, q, from, to, show);
+    if (rehighlight) {
+      highlight(r.textTd, r.item.text || "(no text)", q);
+      if (r.linkEl) {
+        highlight(r.linkEl, r.item.title || r.item.url, q);
+      }
+    }
   });
+  lastQuery = q;
+  updateYearChips();
+  if (items.length && shownRows().length === 0) {
+    emptyNote.hidden = false;
+    emptyNote.textContent = "Nothing matches the current search and filters.";
+  } else {
+    emptyNote.hidden = items.length > 0;
+  }
   refresh();
 }
+
+// rows currently shown, in display order
+function shownRows() {
+  const out = [];
+  for (const tr of rows.children) {
+    if (!tr.hidden) {
+      out.push(rowsById.get(tr.dataset.id));
+    }
+  }
+  return out;
+}
+
+let searchTimer = null;
+searchText.oninput = function () {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(applyView, 150);
+};
+dateFrom.onchange = dateTo.onchange = () => applyView();
+showFilter.onchange = () => applyView();
+sortOrder.onchange = function () {
+  saveSetting("sort", sortOrder.value);
+  applyView();
+};
+clearDates.onclick = function () {
+  dateFrom.value = dateTo.value = "";
+  applyView();
+};
+
+// year chips: counts per year; a click sets the date range to that year
+function renderYearChips() {
+  yearChips.textContent = "";
+  if (!items.length) {
+    return;
+  }
+  const counts = new Map();
+  let undated = 0;
+  items.forEach(function (it) {
+    if (it.date === null) {
+      undated++;
+    } else {
+      const y = new Date(it.date).getFullYear();
+      counts.set(y, (counts.get(y) || 0) + 1);
+    }
+  });
+  const chip = function (label, title, onclick, key) {
+    const b = document.createElement("button");
+    b.className = "chip";
+    b.textContent = label;
+    b.title = title;
+    b.dataset.key = key;
+    b.onclick = onclick;
+    yearChips.appendChild(b);
+  };
+  chip("All years", "Any date", function () {
+    dateFrom.value = dateTo.value = "";
+    if (showFilter.value === "undated") showFilter.value = "all";
+    applyView();
+  }, "all");
+  Array.from(counts.keys())
+    .sort((a, b) => b - a)
+    .forEach(function (y) {
+      chip(y + " (" + counts.get(y) + ")", "Show only " + y, function () {
+        dateFrom.value = y + "-01-01";
+        dateTo.value = y + "-12-31";
+        if (showFilter.value === "undated") showFilter.value = "all";
+        applyView();
+      }, String(y));
+    });
+  if (undated) {
+    chip("Unknown date (" + undated + ")", "Items whose date heading couldn't be read", function () {
+      dateFrom.value = dateTo.value = "";
+      showFilter.value = "undated";
+      applyView();
+    }, "undated");
+  }
+}
+
+function updateYearChips() {
+  const from = dateFrom.value;
+  const to = dateTo.value;
+  let active = "";
+  if (showFilter.value === "undated" && !from && !to) {
+    active = "undated";
+  } else if (!from && !to) {
+    active = "all";
+  } else if (from.slice(5) === "01-01" && to.slice(5) === "12-31" && from.slice(0, 4) === to.slice(0, 4)) {
+    active = from.slice(0, 4);
+  }
+  yearChips.querySelectorAll(".chip").forEach((c) => c.classList.toggle("active", c.dataset.key === active));
+}
+
+// keyboard: Ctrl/Cmd+F searches, Esc clears the search
+document.addEventListener("keydown", function (e) {
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f") {
+    e.preventDefault();
+    searchText.focus();
+    searchText.select();
+  } else if (e.key === "Escape" && document.activeElement === searchText && searchText.value) {
+    searchText.value = "";
+    applyView();
+  }
+});
 
 // ---- selection ----
 
@@ -200,76 +412,108 @@ rows.addEventListener("click", function (e) {
   const id = cb.closest("tr").dataset.id;
   if (e.shiftKey && lastClickedId !== null) {
     // range over the rows currently shown, between anchor and this row
-    const shown = visibleRows();
+    const shown = shownRows();
     const a = shown.findIndex((r) => r.item.id === lastClickedId);
     const b = shown.findIndex((r) => r.item.id === id);
     if (a >= 0 && b >= 0) {
-      shown.slice(Math.min(a, b), Math.max(a, b) + 1).forEach(function (r) {
-        setSelected(r.item.id, cb.checked);
-      });
+      shown.slice(Math.min(a, b), Math.max(a, b) + 1).forEach((r) => setSelected(r.item.id, cb.checked));
     }
   }
   setSelected(id, cb.checked);
   lastClickedId = id;
-  refresh();
+  if (showFilter.value === "selected") {
+    applyView();
+  } else {
+    refresh();
+  }
 });
 
-selectAll.onclick = function () {
-  visibleRows().forEach((r) => setSelected(r.item.id, true));
+selectShown.onclick = function () {
+  shownRows().forEach((r) => setSelected(r.item.id, true));
   refresh();
 };
 
-selectNone.onclick = function () {
+deselectShown.onclick = function () {
+  shownRows().forEach((r) => setSelected(r.item.id, false));
+  applyView();
+};
+
+clearSelection.onclick = function () {
   Array.from(selected).forEach((id) => setSelected(id, false));
-  refresh();
+  applyView();
 };
 
-toggleVisible.onclick = function () {
-  const on = toggleVisible.checked;
-  visibleRows().forEach((r) => setSelected(r.item.id, on));
-  refresh();
+toggleShown.onclick = function () {
+  const on = toggleShown.checked;
+  shownRows().forEach((r) => setSelected(r.item.id, on));
+  applyView();
 };
 
-filterText.oninput = applyFilter;
+// ---- export (backup before deleting) ----
 
-// replaces the selection with every shown item dated on or before the day
-selectUpTo.onclick = function () {
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(cutoffDate.value);
-  if (!m) {
-    setStatus("Pick a date first.", true);
-    return;
-  }
-  const cutoff = new Date(+m[1], m[2] - 1, +m[3]).getTime();
-  Array.from(selected).forEach((id) => setSelected(id, false));
-  let n = 0;
-  visibleRows().forEach(function (r) {
-    if (r.item.date !== null && r.item.date <= cutoff && r.item.status !== "deleted") {
-      setSelected(r.item.id, true);
-      n++;
-    }
-  });
-  const undated = visibleRows().filter((r) => r.item.date === null).length;
-  setStatus(
-    "Selected " + n + " items up to " + formatDate(cutoff) +
-      (undated ? " (" + undated + " without a readable date left out)" : "") + "."
-  );
-  refresh();
-};
-
-// ---- options ----
-
-try {
-  oldestFirst.checked = localStorage.getItem("erasure.oldestFirst") !== "false";
-} catch (e) {
-  // default stays checked
+function download(filename, mime, content) {
+  const url = URL.createObjectURL(new Blob([content], { type: mime }));
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
 }
-oldestFirst.onchange = function () {
-  try {
-    localStorage.setItem("erasure.oldestFirst", String(oldestFirst.checked));
-  } catch (e) {
-    // not remembered — harmless
-  }
+
+function exportRecords() {
+  return shownRows().map(function (r) {
+    const it = r.item;
+    return {
+      date: it.date === null ? "" : isoDay(it.date),
+      time: it.time,
+      text: it.text,
+      video: it.title,
+      url: it.url,
+      status: it.status || "",
+    };
+  });
+}
+
+function exportName(ext) {
+  return "erasure-" + listType + "-" + isoDay(Date.now()) + "." + ext;
+}
+
+exportCsv.onclick = function () {
+  const recs = exportRecords();
+  const cols = ["date", "time", "text", "video", "url", "status"];
+  const quote = (v) => '"' + String(v).replace(/"/g, '""') + '"';
+  const lines = [cols.join(",")].concat(recs.map((r) => cols.map((c) => quote(r[c])).join(",")));
+  // BOM so Excel reads UTF-8
+  download(exportName("csv"), "text/csv;charset=utf-8", "﻿" + lines.join("\r\n"));
+  setStatus("Exported " + recs.length + " items as CSV.");
 };
+
+exportJson.onclick = function () {
+  const recs = exportRecords();
+  download(exportName("json"), "application/json", JSON.stringify(recs, null, 2));
+  setStatus("Exported " + recs.length + " items as JSON.");
+};
+
+// ---- settings ----
+
+oldestFirst.checked = loadSetting("oldestFirst", "true") === "true";
+oldestFirst.onchange = () => saveSetting("oldestFirst", oldestFirst.checked);
+quickOldest.checked = loadSetting("quickOldest", "false") === "true";
+quickOldest.onchange = () => saveSetting("quickOldest", quickOldest.checked);
+sortOrder.value = loadSetting("sort", "newest") === "oldest" ? "oldest" : "newest";
+currentType = TYPES[loadSetting("type", "comments")] ? loadSetting("type", "comments") : "comments";
+quickDate.max = dateFrom.max = dateTo.max = isoDay(Date.now());
+quickClearDate.onclick = () => (quickDate.value = "");
+
+function clearList() {
+  items = [];
+  selected.clear();
+  listType = null;
+  stale = false;
+  renderList();
+}
 
 typeTabs.addEventListener("click", function (e) {
   const type = e.target.dataset && e.target.dataset.type;
@@ -277,13 +521,10 @@ typeTabs.addEventListener("click", function (e) {
     return;
   }
   currentType = type;
-  // the worker tab can only hold one list; a list of another type is
+  saveSetting("type", type);
+  // the worker tab holds one list at a time; another type's list is
   // useless for deleting, so start clean
-  items = [];
-  selected.clear();
-  listType = null;
-  stale = false;
-  renderList();
+  clearList();
   setStatus("Click “Load list” to load your " + TYPES[type].label + ".");
   refresh();
 });
@@ -304,19 +545,25 @@ async function workerAlive() {
   }
 }
 
-/* Open the worker as the active tab of the last focused browser window,
-   so it renders while the manager window floats above it. If the manager
-   itself is that window (opened as a tab), use a new window instead. */
+// the browser window behind the manager, or null
+async function browserWindow() {
+  const me = await chrome.windows.getCurrent();
+  try {
+    const w = await chrome.windows.getLastFocused({ windowTypes: ["normal"] });
+    return w.id !== me.id && w.state !== "minimized" ? w : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+/* Open the worker as the active tab of the browser window, so it renders
+   while the manager window floats above it. Without a usable browser
+   window (or if the manager is itself a tab there), use a new window. */
 async function createWorkerTab(url) {
   const me = await chrome.windows.getCurrent();
-  let target = null;
-  try {
-    target = await chrome.windows.getLastFocused({ windowTypes: ["normal"] });
-  } catch (e) {
-    // no normal window — create one below
-  }
+  const target = await browserWindow();
   let tab;
-  if (target && target.id !== me.id && target.state !== "minimized") {
+  if (target) {
     tab = await chrome.tabs.create({ windowId: target.id, url: url, active: true });
   } else {
     const w = await chrome.windows.create({ url: url, type: "normal", focused: false });
@@ -335,7 +582,7 @@ async function openWorker(url) {
       reject(
         new Error(
           "My Activity didn't load within " + LOAD_TIMEOUT / 1000 +
-            " s. Are you signed in to Google in that tab? Sign in, then click “Load list” again."
+            " s. Are you signed in to Google in that tab? Sign in, then try again."
         )
       );
     }, LOAD_TIMEOUT);
@@ -362,7 +609,7 @@ chrome.tabs.onUpdated.addListener(function (tabId, info, tab) {
   if (info.status === "loading") {
     if (pendingLoad) {
       pendingLoad.sawLoading = true;
-    } else if (listType) {
+    } else if (listType || busy) {
       // a new document: the listed ids and any running script are gone
       workerLost("The My Activity tab navigated away — load the list again.");
     }
@@ -390,6 +637,8 @@ function workerLost(message) {
   }
   clearQueued();
   busy = null;
+  runInfo = null;
+  setProgress(false);
   if (listType) {
     stale = true;
   }
@@ -418,6 +667,16 @@ showTabButton.onclick = async function () {
   refresh();
 };
 
+openActivity.onclick = async function () {
+  const target = await browserWindow();
+  if (target) {
+    chrome.tabs.create({ windowId: target.id, url: TYPES[currentType].url, active: true });
+    chrome.windows.update(target.id, { focused: true });
+  } else {
+    chrome.windows.create({ url: TYPES[currentType].url, type: "normal" });
+  }
+};
+
 stopButton.onclick = function () {
   if (!worker) {
     return;
@@ -436,13 +695,10 @@ stopButton.onclick = function () {
 loadButton.onclick = async function () {
   const type = currentType;
   busy = "opening";
-  items = [];
-  selected.clear();
-  listType = null;
-  stale = false;
-  renderList();
+  clearList();
   emptyNote.textContent = "Loading…";
   setStatus("Opening My Activity…");
+  setProgress(true, null);
   refresh();
   try {
     await openWorker(TYPES[type].url);
@@ -455,12 +711,13 @@ loadButton.onclick = async function () {
     busy = null;
     listType = null;
     emptyNote.textContent = "No items loaded.";
+    setProgress(false);
     setStatus(e.message || String(e), true);
     refresh();
   }
 };
 
-// ---- delete ----
+// ---- delete selected ----
 
 function clearQueued() {
   items.forEach(function (it) {
@@ -470,81 +727,138 @@ function clearQueued() {
   });
 }
 
+function confirmText(list, what) {
+  const dated = list.filter((it) => it.date !== null).map((it) => it.date);
+  const lines = ["Permanently delete " + what + " from your YouTube history?"];
+  if (dated.length) {
+    lines.push(
+      "Dates: " + formatDate(Math.min.apply(null, dated)) + " to " + formatDate(Math.max.apply(null, dated)) +
+        (dated.length < list.length ? " (+ " + (list.length - dated.length) + " with unknown date)" : "")
+    );
+  }
+  const hidden = list.filter((it) => rowsById.get(it.id).tr.hidden).length;
+  if (hidden) {
+    lines.push("⚠ " + hidden + " of them are hidden by the current search or filters.");
+  }
+  lines.push("", "This cannot be undone.");
+  return lines.join("\n");
+}
+
 deleteSelected.onclick = async function () {
-  const ids = pendingSelection().map((it) => it.id);
-  if (!ids.length) {
+  const list = pendingSelection();
+  if (!list.length) {
     return;
   }
-  const what = ids.length + " " + TYPES[listType].label;
-  if (!confirm("Permanently delete " + what + " from your YouTube history?\nThis cannot be undone.")) {
+  const what = list.length + " " + TYPES[listType].label;
+  if (!confirm(confirmText(list, what))) {
     return;
   }
   if (!(await workerAlive())) {
     workerLost("The My Activity tab is gone — load the list again.");
     return;
   }
-  ids.forEach((id) => setItemStatus(id, "queued"));
+  list.forEach((it) => setItemStatus(it.id, "queued"));
   busy = "deleting";
-  deleteTotal = ids.length;
+  runInfo = { total: list.length, started: Date.now() };
   setStatus("Deleting " + what + "…");
+  setProgress(true, 0);
   refresh();
   try {
     // bring the worker to the front of its window so it renders
     await chrome.tabs.update(worker.tabId, { active: true });
-    await inject({ ids: ids, oldestFirst: oldestFirst.checked });
+    await inject({ ids: list.map((it) => it.id), oldestFirst: oldestFirst.checked });
   } catch (e) {
     clearQueued();
     busy = null;
+    setProgress(false);
     setStatus("Could not start deleting: " + (e.message || e), true);
+    refresh();
+  }
+};
+
+// ---- quick delete (no list) ----
+
+quickDelete.onclick = async function () {
+  const type = currentType;
+  const cutoff = parseIsoDay(quickDate.value);
+  const what = (cutoff === null ? "ALL your " : "all your ") + TYPES[type].label +
+    (cutoff === null ? "" : " dated on or before " + formatDate(cutoff));
+  if (!confirm("Quick delete " + what + "?\n\nThe list is not loaded or shown first. This cannot be undone.")) {
+    return;
+  }
+  busy = "opening";
+  clearList();
+  setStatus("Opening My Activity…");
+  setProgress(true, null);
+  refresh();
+  try {
+    await openWorker(TYPES[type].url);
+    busy = "quick";
+    runInfo = { total: null, started: Date.now() };
+    setStatus("Quick delete: starting…");
+    refresh();
+    await inject({ cutoffDate: quickDate.value || null, oldestFirst: quickOldest.checked });
+  } catch (e) {
+    busy = null;
+    setProgress(false);
+    setStatus(e.message || String(e), true);
     refresh();
   }
 };
 
 // ---- messages from the content script ----
 
+function finishRun(text, isError) {
+  clearQueued();
+  busy = null;
+  runInfo = null;
+  setProgress(false);
+  setStatus(text, isError);
+}
+
 function onProgress(p) {
   const paused = /paused/.test(p.detail || "");
-  if (busy === "loading") {
-    if (p.state === "error") {
-      busy = null;
+  const pauseText = "Paused — bring the My Activity tab to the front (“Show worker tab”). ";
+  if (p.state === "error") {
+    if (busy === "loading") {
       listType = null;
       emptyNote.textContent = "No items loaded.";
-      setStatus("Error: " + p.detail, true);
-    } else if (p.state === "done") {
+    }
+    finishRun("Error: " + p.detail, true);
+  } else if (busy === "loading") {
+    if (p.state === "done") {
       busy = null; // the items message arrived just before
+      setProgress(false);
     } else {
-      setStatus(
-        (paused ? "Paused — bring the My Activity tab to the front. " : "Loading all " + TYPES[listType].label + "… ") +
-          (paused ? "" : p.detail)
-      );
+      setStatus(paused ? pauseText : "Loading all " + TYPES[listType].label + "… " + p.detail);
     }
   } else if (busy === "deleting") {
-    const counts = p.deleted + " of " + deleteTotal + " deleted" + (p.skipped ? ", " + p.skipped + " skipped" : "");
-    if (p.state === "error") {
-      clearQueued();
-      busy = null;
-      setStatus("Error: " + p.detail, true);
-    } else if (p.state === "done") {
-      clearQueued();
-      busy = null;
-      setStatus("Done: " + counts + (p.detail ? " — " + p.detail : ""));
+    const done = p.deleted + p.skipped;
+    const counts = p.deleted + " of " + runInfo.total + " deleted" + (p.skipped ? ", " + p.skipped + " skipped" : "");
+    if (p.state === "done") {
+      finishRun("Done: " + counts + (p.detail ? " — " + p.detail : ""));
     } else {
-      setStatus(
-        (paused ? "Paused — bring the My Activity tab to the front. " : "Deleting… ") +
-          counts +
-          (!paused && p.detail ? " — " + p.detail : "")
-      );
+      const elapsed = Date.now() - runInfo.started;
+      const eta = done > 0 ? " · about " + formatDuration((elapsed / done) * (runInfo.total - done)) + " left" : "";
+      setProgress(true, done / runInfo.total);
+      setStatus((paused ? pauseText : "Deleting… ") + counts + (paused ? "" : eta));
+    }
+  } else if (busy === "quick") {
+    const counts = p.deleted + " deleted" + (p.skipped ? ", " + p.skipped + " skipped" : "");
+    if (p.state === "done") {
+      finishRun("Quick delete done: " + counts + (p.detail ? " — " + p.detail : "") + ". Load the list to see what's left.");
+    } else if (p.state === "loading") {
+      setStatus(paused ? pauseText : "Quick delete: loading the whole list first (oldest first)… " + p.detail);
+    } else {
+      setStatus((paused ? pauseText : "Quick delete: ") + counts + (p.detail && !paused ? " — " + p.detail : ""));
     }
   }
   refresh();
 }
 
 function onItems(msg) {
-  items = msg.items.map(function (it) {
-    return Object.assign({}, it, { status: undefined });
-  });
+  items = msg.items.map((it) => Object.assign({}, it, { status: undefined }));
   selected.clear();
-  lastClickedId = null;
   stale = false;
   renderList();
   const unparsed = msg.unparsedHeadings || [];
@@ -554,7 +868,7 @@ function onItems(msg) {
       (unparsed.length
         ? " Could not read " + unparsed.length + " date heading(s), e.g. “" +
           unparsed.slice(0, 3).join("”, “") +
-          "” — items below them show “unknown date” and are never picked by “Select up to”."
+          "” — items below them show “unknown date” and are left out of date filters."
         : ""),
     unparsed.length > 0
   );
@@ -562,7 +876,7 @@ function onItems(msg) {
 }
 
 chrome.runtime.onMessage.addListener(function (msg, sender) {
-  // only the worker tab's script; popup-started runs elsewhere are ignored
+  // only the worker tab's script
   if (!msg || !worker || !sender.tab || sender.tab.id !== worker.tabId) {
     return;
   }
@@ -576,11 +890,5 @@ chrome.runtime.onMessage.addListener(function (msg, sender) {
   }
 });
 
-// the popup focuses an already open manager instead of opening another
-window.erasureFocus = function () {
-  chrome.windows.getCurrent(function (w) {
-    chrome.windows.update(w.id, { focused: true });
-  });
-};
-
+renderList();
 refresh();

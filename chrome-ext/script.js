@@ -1,12 +1,12 @@
 (async function () {
-  /* Run options, set by the popup right before injection (see popup.js).
+  /* Run options, set by the manager right before injection (see manager.js).
      Pasted into the console without them, the defaults apply: newest
      first, no date limit. Consumed here so a stale set never leaks into a
      later run. */
   var OPTIONS = window.__erasureOptions || {};
   delete window.__erasureOptions;
 
-  /* Re-injection guard: clicking the popup's delete button again (or
+  /* Re-injection guard: starting a second run in the same tab (or
      re-pasting the script) while a run is active must not start a second,
      interleaved loop. The whole body is inside this IIFE so a duplicate
      injection skips everything. */
@@ -105,8 +105,8 @@
   // null = no limit. Items without a readable date are never deleted then.
   var CUTOFF = parseIsoDay(OPTIONS.cutoffDate);
 
-  /* What this run does (the manager page drives the last two):
-     "auto"  delete everything matching the options (popup / console)
+  /* What this run does (all three driven by the manager page):
+     "auto"  delete everything matching the options (quick delete / console)
      "list"  load the whole list and send every item to the manager
      "ids"   delete only the items the manager selected, by the ids
              ("data-erasure-id") a "list" run gave them in this document */
@@ -168,7 +168,7 @@
   var backoffMs = 0; // current inter-item wait; 0 while deletions succeed
 
   var runStartedAt = null; // performance.now() when the loop began
-  var stopRequested = false; // set by the popup's Stop button
+  var stopRequested = false; // set by the manager's Stop button
   var currentState = "running"; // running | scrolling | done | error
   var currentDetail = "";
   var wakeUp = null; // resolves waitUntilVisible() early on stop
@@ -318,7 +318,7 @@
 
   // ---- item dates ----
 
-  // "YYYY-MM-DD" (the popup's <input type="date">) -> local midnight in ms
+  // "YYYY-MM-DD" (an <input type="date">) -> local midnight in ms
   function parseIsoDay(s) {
     var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s || "");
     if (!m) {
@@ -925,9 +925,10 @@
     };
   }
 
-  /* Broadcast progress to the popup. The popup is usually closed — a
-     missing receiver must never throw or spam the console, so the
-     lastError read below deliberately swallows it. */
+  /* Broadcast progress to the manager. It may be closed (or the script
+     pasted into the console) — a missing receiver must never throw or
+     spam the console, so the lastError read below deliberately
+     swallows it. */
   function report() {
     if (!hasExtensionMessaging) {
       return;
@@ -1087,7 +1088,7 @@
 
   /* Popup control channel: "erasure:stop" flips the flag the loop checks
      each iteration; "erasure:status" answers with the current snapshot so
-     a (re)opened popup can resume showing progress. The previous run's
+     a (re)opened manager can resume showing progress. The previous run's
      listener (if any) is replaced — the injection guard above guarantees
      no live run owns it. */
   if (hasExtensionMessaging && chrome.runtime.onMessage) {
@@ -1158,7 +1159,7 @@
       setState("error", "could not read item dates — nothing deleted (see console)");
     } else {
       runStartedAt = performance.now();
-      report(); // announce the run to an already-open popup
+      report(); // announce the run to the manager
       // one dialog watcher covers the whole run (attempts overlap now)
       var stopDialogWatch = watchForConsentDialog();
       var outcome;

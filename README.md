@@ -32,3 +32,12 @@ This needs access to myactivity.google.com (new host permission).
 Update 2.4.1:
 
 Fix wrong item dates: items below a day heading that can't be read are now "unknown date" instead of inheriting the previous heading's day. Year-less headings get the right year from the newest-first order, numeric dates (29.03.2015) are understood, and the manager names the headings it couldn't read.
+
+Update 2.5.0:
+
+The toolbar icon now opens the manager window directly (the small popup is gone); everything happens there:
+- search (Ctrl+F) with highlighted matches, date range filter, year chips with counts, show filter (not deleted / selected / unknown date / skipped / deleted) and newest/oldest sort
+- export the shown items as CSV or JSON as a backup before deleting
+- progress bar with time estimate; the delete confirmation names the date range and warns about selected items hidden by filters
+- quick delete: delete everything (or everything up to a date) without loading the list first — the former popup function
+- "Open in My Activity" opens the history page in the browser
