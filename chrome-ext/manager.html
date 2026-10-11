@@ -31,17 +31,17 @@
         top: 0;
         z-index: 1;
         background-color: var(--bg);
-        padding: 12px 16px 8px;
+        padding: 12px 16px 6px;
         border-bottom: 1px solid var(--line);
     }
     h1 {
-        margin: 0 0 10px;
+        margin: 0;
         font-size: 18px;
         display: flex;
         align-items: center;
         gap: 8px;
     }
-    h1 img { width: 24px; height: 24px; }
+    h1 img { width: 32px; height: 32px; }
     .row {
         display: flex;
         flex-wrap: wrap;
@@ -57,12 +57,14 @@
         padding: 7px 12px;
         font-size: 13px;
         cursor: pointer;
+        white-space: nowrap;
     }
     button:hover:not(:disabled) { filter: brightness(1.2); }
     button:disabled { opacity: .45; cursor: default; }
     button.secondary { background-color: #555; }
     button.danger { background-color: var(--danger); }
-    .tabs { display: flex; gap: 0; }
+    button.small { padding: 4px 8px; font-size: 12px; }
+    .tabs { display: inline-flex; }
     .tabs button {
         border-radius: 0;
         background-color: var(--panel-2);
@@ -71,7 +73,7 @@
     .tabs button:first-child { border-radius: 6px 0 0 6px; }
     .tabs button:last-child { border-radius: 0 6px 6px 0; }
     .tabs button.active { background-color: var(--accent); border-color: var(--accent); }
-    input[type="date"], input[type="search"] {
+    input[type="date"], input[type="search"], select {
         background-color: var(--panel);
         color: var(--text);
         color-scheme: dark;
@@ -80,10 +82,11 @@
         padding: 6px 8px;
         font-size: 13px;
     }
-    input[type="search"] { flex: 1 1 200px; min-width: 160px; }
+    input[type="search"] { flex: 1 1 240px; min-width: 180px; }
     label { display: inline-flex; align-items: center; gap: 6px; }
     .group {
         display: inline-flex;
+        flex-wrap: wrap;
         align-items: center;
         gap: 6px;
         padding: 4px 8px;
@@ -91,16 +94,56 @@
         border-radius: 6px;
     }
     .spacer { flex: 1; }
-    #statusLine {
-        flex: 1 1 260px;
-        padding: 7px 10px;
+    .statusbox {
+        flex: 1 1 320px;
+        padding: 6px 10px;
         background-color: var(--panel-2);
         border-radius: 6px;
-        overflow-wrap: anywhere;
+        min-height: 32px;
     }
+    #statusLine { overflow-wrap: anywhere; }
     #statusLine.error { color: #ff8a80; }
-    #summary { color: var(--muted); font-size: 13px; }
-    .hint { color: var(--muted); font-size: 12px; margin: 0; }
+    .progress {
+        height: 4px;
+        margin-top: 5px;
+        background-color: var(--line);
+        border-radius: 2px;
+        overflow: hidden;
+    }
+    .progress[hidden] { display: none; }
+    #progressFill {
+        height: 100%;
+        width: 0;
+        background-color: var(--accent);
+        transition: width .3s;
+    }
+    .progress.indeterminate #progressFill {
+        width: 30%;
+        animation: slide 1.2s linear infinite;
+    }
+    @keyframes slide {
+        from { transform: translateX(-100%); }
+        to { transform: translateX(340%); }
+    }
+    .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+    .chip {
+        background-color: var(--panel-2);
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 3px 10px;
+        font-size: 12px;
+    }
+    .chip.active { background-color: var(--accent); border-color: var(--accent); }
+    #summary, .muted { color: var(--muted); font-size: 13px; }
+    .hint { color: var(--muted); font-size: 12px; }
+    details.quick {
+        margin-bottom: 8px;
+        background-color: var(--panel);
+        border-radius: 6px;
+        padding: 6px 10px;
+    }
+    details.quick summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+    details.quick .row { margin: 8px 0 2px; }
     main { padding: 8px 16px 24px; }
     table { width: 100%; border-collapse: collapse; }
     th, td {
@@ -113,57 +156,135 @@
     td.check, th.check { width: 28px; }
     td.date { white-space: nowrap; width: 120px; color: var(--muted); }
     td.text { overflow-wrap: anywhere; }
+    td.text .context { color: var(--muted); font-size: 12px; margin-top: 2px; }
     td.video { width: 28%; overflow-wrap: anywhere; }
     td.video a { color: #8ab4f8; }
-    td.state { width: 90px; font-size: 12px; white-space: nowrap; }
+    td.state { width: 80px; font-size: 12px; white-space: nowrap; }
+    mark { background-color: #fdd835; color: #000; border-radius: 2px; }
     tr.selected { background-color: rgba(70, 136, 241, .15); }
     tr.deleted td { opacity: .45; text-decoration: line-through; }
     tr.deleted td.state { color: var(--ok); text-decoration: none; opacity: 1; }
     tr.skipped td.state { color: var(--warn); }
     tr.queued td.state { color: var(--accent); }
     tr[hidden] { display: none; }
+    #videoControls[hidden] { display: none; }
+    tr.vgroup td { background-color: var(--panel); border-bottom-color: var(--bg); }
+    tr.vgroup .title { font-weight: bold; }
+    tr.vgroup .title a { color: #8ab4f8; }
+    tr.vgroup .meta { color: var(--muted); font-size: 12px; margin-left: 8px; }
+    tr.member td.check { padding-left: 20px; }
+    button.twisty {
+        background: none;
+        color: var(--muted);
+        padding: 0 6px 0 0;
+        font-size: 12px;
+    }
+    .badge {
+        display: inline-block;
+        margin-left: 6px;
+        padding: 1px 6px;
+        border-radius: 8px;
+        font-size: 11px;
+        font-weight: normal;
+        background-color: #6d4c41;
+        color: #ffe0b2;
+        vertical-align: middle;
+    }
     .empty { color: var(--muted); padding: 40px 0; text-align: center; }
     </style>
 </head>
 
 <body>
     <header>
-        <h1><img src="images/logo_32.png" alt="">Erasure Manager</h1>
         <div class="row">
+            <h1><img src="images/logo_48.png" alt="">Erasure</h1>
             <div class="tabs" id="typeTabs">
-                <button data-type="comments" class="active">Comments</button>
+                <button data-type="comments">Comments</button>
                 <button data-type="livechats">Live chats</button>
                 <button data-type="posts">Community posts</button>
             </div>
             <button id="loadButton">Load list</button>
+            <button id="openActivity" class="secondary" title="Open this history on Google My Activity in your browser">Open in My Activity</button>
+            <div class="statusbox">
+                <div id="statusLine">Choose a type and click “Load list”.</div>
+                <div class="progress" id="progress" hidden><div id="progressFill"></div></div>
+            </div>
+            <button id="showTabButton" class="secondary" disabled title="Bring the My Activity tab Erasure works in to the front">Show worker tab</button>
             <button id="stopButton" class="danger" disabled>Stop</button>
-            <button id="showTabButton" class="secondary" disabled>Show My Activity tab</button>
-            <span id="statusLine">Choose a type and click “Load list”.</span>
         </div>
+
+        <details class="quick" id="quickPanel">
+            <summary>Quick delete — delete without loading the list first (faster for very large histories)</summary>
+            <div class="row">
+                <label>Only items up to (incl.) <input type="date" id="quickDate"></label>
+                <button id="quickClearDate" class="secondary small">No date limit</button>
+                <label><input type="checkbox" id="quickOldest"> Oldest first (loads the whole list anyway)</label>
+                <span class="spacer"></span>
+                <button id="quickDelete" class="danger">Quick delete</button>
+            </div>
+        </details>
+
         <div class="row">
-            <input type="search" id="filterText" placeholder="Filter by text or video…">
-            <button id="selectAll" class="secondary">Select all</button>
-            <button id="selectNone" class="secondary">Select none</button>
+            <input type="search" id="searchText" placeholder="Search text and video titles…  (Ctrl+F)">
             <span class="group">
-                Select up to (incl.)
-                <input type="date" id="cutoffDate">
-                <button id="selectUpTo" class="secondary">Select</button>
+                From <input type="date" id="dateFrom">
+                to <input type="date" id="dateTo">
+                <button id="clearDates" class="secondary small">Any date</button>
+            </span>
+            <select id="showFilter" title="Which rows to show">
+                <option value="all">Show all</option>
+                <option value="pending">Not deleted</option>
+                <option value="selected">Selected</option>
+                <option value="undated">Unknown date</option>
+                <option value="skipped">Skipped</option>
+                <option value="deleted">Deleted</option>
+                <option value="unavailable">Unavailable videos</option>
+            </select>
+            <select id="viewMode" title="List every item, or group them by video">
+                <option value="list">List</option>
+                <option value="video">By video</option>
+            </select>
+            <select id="sortOrder" title="Sort order">
+                <option value="newest">Newest first</option>
+                <option value="oldest">Oldest first</option>
+            </select>
+            <span class="group" id="videoControls" hidden>
+                Videos
+                <select id="groupSort" title="Order of the videos">
+                    <option value="count">Most items</option>
+                    <option value="newest">Newest</option>
+                    <option value="oldest">Oldest</option>
+                    <option value="title">Title A–Z</option>
+                </select>
+                <button id="expandAll" class="secondary small">Expand all</button>
+                <button id="collapseAll" class="secondary small">Collapse all</button>
+            </span>
+        </div>
+        <div class="row chips" id="yearChips"></div>
+        <div class="row">
+            <button id="selectShown" class="secondary">Select shown</button>
+            <button id="deselectShown" class="secondary">Deselect shown</button>
+            <button id="clearSelection" class="secondary">Clear selection</button>
+            <span class="group">
+                Export shown
+                <button id="exportCsv" class="secondary small" title="Spreadsheet backup (Excel, LibreOffice)">CSV</button>
+                <button id="exportJson" class="secondary small">JSON</button>
             </span>
             <span class="spacer"></span>
-            <label><input type="checkbox" id="oldestFirst" checked> Oldest first</label>
+            <label title="Order in which the selected items are deleted"><input type="checkbox" id="oldestFirst" checked> Delete oldest first</label>
             <button id="deleteSelected" class="danger" disabled>Delete selected</button>
         </div>
         <div class="row">
             <span id="summary"></span>
             <span class="spacer"></span>
-            <p class="hint">Loading and deleting run in a My Activity tab in your browser window — keep that tab in front (it pauses while hidden). Shift-click selects a range.</p>
+            <span class="hint">Shift-click selects a range · Erasure works in a My Activity tab in your browser window — keep it in front while loading or deleting.</span>
         </div>
     </header>
     <main>
         <table>
             <thead>
                 <tr>
-                    <th class="check"><input type="checkbox" id="toggleVisible" title="Select / deselect all shown"></th>
+                    <th class="check"><input type="checkbox" id="toggleShown" title="Select / deselect all shown"></th>
                     <th>Date</th>
                     <th>Text</th>
                     <th>Video / post</th>
