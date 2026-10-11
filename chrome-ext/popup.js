@@ -149,6 +149,37 @@ function runOptions() {
   };
 }
 
+// ---- manager page ----
+
+// opens as a window floating over the browser, so the My Activity tab it
+// drives stays visible (and keeps rendering) behind it
+openManager.onclick = function () {
+  var url = chrome.runtime.getURL("manager.html");
+  var open = chrome.extension.getViews({ type: "tab" }).find(function (v) {
+    return v.location.href === url && v.erasureFocus;
+  });
+  if (open) {
+    open.erasureFocus();
+    window.close();
+    return;
+  }
+  var width = Math.min(1100, screen.availWidth - 160);
+  var height = Math.min(900, screen.availHeight - 80);
+  chrome.windows.create(
+    {
+      url: url,
+      type: "popup",
+      width: width,
+      height: height,
+      left: Math.round(screen.availLeft + (screen.availWidth - width) / 2),
+      top: Math.round(screen.availTop + (screen.availHeight - height) / 2),
+    },
+    function () {
+      window.close();
+    }
+  );
+};
+
 // ---- navigate / delete buttons ----
 
 // comment history

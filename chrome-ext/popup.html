@@ -108,6 +108,14 @@
         border-radius: 4px;
         padding: 3px 6px;
     }
+    #openManager {
+        display: block;
+        width: calc(100% - 20px);
+        height: auto;
+        padding: 10px;
+        font-size: 14px;
+        background-color: #2e7d32;
+    }
     #clearCutoff {
         background-color: #555;
         border-radius: 4px;
@@ -135,6 +143,7 @@
         <span id="statusText">Idle</span>
         <button id="stopButton">Stop</button>
     </div>
+    <button id="openManager" class="manager">Open manager — load, pick and delete single items</button>
     <div class="options">
         <label>
             Delete only items up to (incl.)
