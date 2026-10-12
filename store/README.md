@@ -23,69 +23,41 @@ All are 24-bit PNG without alpha. The screenshots show the real manager window w
 **Description (English):**
 
 ```
-Clean up your YouTube history — selectively, not just all-or-nothing.
+Delete your YouTube comments selectively — not just all-or-nothing.
 
-Comment Deleter for YouTube loads your complete list of YouTube comments, live chat messages and community posts from your Google "My Activity" page and lets you decide exactly what to remove.
+Comment Deleter for YouTube loads your comments, live chat messages and community posts from Google "My Activity" and lets you choose exactly what to remove.
 
-FIND WHAT YOU WANT TO DELETE
-• See all your comments with date, time, text and video
-• Search with highlighted matches
-• Filter by date range or jump to a year with one click
-• "By video" view: all your comments grouped per video, with count and date range
-• Find comments on private, deleted or unavailable videos and remove them in one go
+• Search and filter by date or year
+• Group comments by video
+• Find comments on private or deleted videos
+• Delete single items, a whole video's comments or everything up to a date
+• Export a CSV/JSON backup before deleting
 
-DELETE THE WAY YOU WANT
-• Single comments, a whole video's comments, everything shown, or everything up to a date
-• Newest or oldest first
-• Quick delete for very large histories — no need to load the list first
-• Progress bar with time estimate and a Stop button
-• A confirmation that shows the date range before anything is deleted
+Everything runs locally in your browser. No data is collected or sent anywhere.
 
-SAFE AND PRIVATE
-• Export your comments as CSV or JSON as a backup before deleting
-• Everything happens locally in your browser — no data is collected or sent anywhere
-• No tracking, no ads, no account needed
-• Open source on GitHub
+Open source: https://github.com/Tilt7238/YoutubeCommentDeleter
 
-HOW IT WORKS
-Click the extension icon, choose comments, live chats or community posts and click "Load list". The extension opens your My Activity page in a tab and reads the list. Keep that tab visible while loading or deleting. Deleted comments cannot be restored, so export a backup first if you might want them later.
-
-Based on the open-source project "Erasure" by Ian Campbell.
-This extension is not affiliated with or endorsed by YouTube or Google.
+Based on "Erasure" by Ian Campbell. Not affiliated with YouTube or Google.
 ```
 
 **Description (German):**
 
 ```
-Räum deinen YouTube-Verlauf auf — gezielt statt alles oder nichts.
+Lösch deine YouTube-Kommentare gezielt — statt alles oder nichts.
 
-Comment Deleter for YouTube lädt die komplette Liste deiner YouTube-Kommentare, Livechat-Nachrichten und Community-Beiträge aus deiner Google-Seite „Meine Aktivitäten“. Du entscheidest genau, was weg soll.
+Comment Deleter for YouTube lädt deine Kommentare, Livechat-Nachrichten und Community-Beiträge aus Googles „Meine Aktivitäten“. Du entscheidest genau, was weg soll.
 
-FINDEN, WAS WEG SOLL
-• Alle Kommentare mit Datum, Uhrzeit, Text und Video
-• Suche mit markierten Treffern
-• Filter nach Zeitraum oder per Klick nach Jahr
-• Ansicht „Nach Video“: alle Kommentare pro Video gruppiert, mit Anzahl und Zeitraum
-• Kommentare unter privaten, gelöschten oder nicht verfügbaren Videos finden und gesammelt entfernen
+• Suchen und nach Datum oder Jahr filtern
+• Kommentare nach Video gruppieren
+• Kommentare unter privaten oder gelöschten Videos finden
+• Einzelne Einträge, alle zu einem Video oder alles bis zu einem Datum löschen
+• Vorher ein Backup als CSV/JSON exportieren
 
-LÖSCHEN, WIE DU WILLST
-• Einzelne Kommentare, alle zu einem Video, alles Angezeigte oder alles bis zu einem Datum
-• Neueste oder älteste zuerst
-• Schnelllöschen für sehr große Verläufe, ohne die Liste vorher zu laden
-• Fortschrittsbalken mit Restzeit und Stopp-Taste
-• Bestätigung mit Zeitraum, bevor irgendetwas gelöscht wird
+Alles läuft lokal in deinem Browser. Es werden keine Daten erhoben oder übertragen.
 
-SICHER UND PRIVAT
-• Export als CSV oder JSON als Backup vor dem Löschen
-• Alles läuft lokal in deinem Browser — es werden keine Daten erhoben oder übertragen
-• Kein Tracking, keine Werbung, kein Konto nötig
-• Open Source auf GitHub
+Open Source: https://github.com/Tilt7238/YoutubeCommentDeleter
 
-SO FUNKTIONIERT ES
-Erweiterungs-Symbol anklicken, Kommentare, Livechats oder Community-Beiträge wählen und auf „Load list“ klicken. Die Erweiterung öffnet deine „Meine Aktivitäten“-Seite in einem Tab und liest die Liste. Lass diesen Tab beim Laden und Löschen sichtbar. Gelöschte Kommentare lassen sich nicht wiederherstellen, exportiere vorher ein Backup, falls du sie noch brauchst.
-
-Basiert auf dem Open-Source-Projekt „Erasure“ von Ian Campbell.
-Diese Erweiterung steht in keiner Verbindung zu YouTube oder Google.
+Basiert auf „Erasure“ von Ian Campbell. Keine Verbindung zu YouTube oder Google.
 ```
 
 ## Privacy tab
